@@ -1,0 +1,7 @@
+Application Performance,In Sample_Data,Out-of-Sample Data
+Top_1_Accuracy,12.46%,11.96%
+Top_3_Accuracy,20.92%,19.88%
+Top_5_Accuracy,24.91%,24.17%
+"Prediction_Speed
+ (per prediction)",20.08 msec,18.21 msec
+Memory_Usage_in_Mb,594.11,594.11

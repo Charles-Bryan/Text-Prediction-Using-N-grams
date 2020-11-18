@@ -1,0 +1,2056 @@
+---
+title: "Text Prediction Using N-Grams"
+author: "Charles Bryan"
+date: "6/5/2020"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+  pdf_document: default
+---
+
+<style type="text/css">
+
+h5 {
+  font-size: 26px;
+  color: Black;
+  text-align: center;
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Links
+
+The Developed Application: <a href="https://charlesbryan.shinyapps.io/Text_PredictR/" target="_blank">Text Predict-R Application</a>                           
+
+The Corresponding Coursera Presentation Slides:  <a href="https://rpubs.com/CharlesBryan/Text_Predict-R_slides" target="_blank">Text Predict-R Presentation Slides</a>
+
+<br>
+
+My LinkedIn Profile: <a href="https://www.linkedin.com/in/charles-bryan/" target="_blank">Charles Bryan</a>
+
+### Introduction
+
+  Natural Language Processing (NLP) is a field of study that uses computers to process and analyze large sets of language data. This field began seeing serious research interests as far back as 1954 with the Georgetown-IBM experiment where more than sixty Russian sentences were automatically translated to English. Until the 1980s NLP systems generally followed manual rules for automated processing. However, at this point machine learning algorithms and statistical modeling approaches began seeing successes in this field. Common tasks handled today using these methods include automatic speech recognition, part-of-speech tagging, and machine translation to predict a source language. In this project, we will use statistical modeling through the use of *n-grams* to predict the next word in a sentence.
+  
+  N-grams are simply sequences of items. In this project almost all of the items we are interested in are words such as *the* or *cat*. The 'n' in n-gram refers to the length of the sequence of words. For example *the cat* is a 2-gram (sometimes referred to as a bigram) and *the fluffly cat* is a 3-gram(a.k.a. a trigram). The length of the sequence can be anything from length 1 (a unigram or one-gram) to extremely large lengths such as a 1000-gram. In this project we will create statistical models based on the n-grams of our given dataset and use these statistical models to predict the next word in a sequence. 
+  
+  As a simplified example, imagine that our provided dataset was simply 100 five word tweets where 99 tweets were the identical *I love to eat chocolate* and the 1 remaining tweet was *I love to eat zucchinis.* Based on this dataset, if our application is prompted with the phrase *I love to eat* we would predict the next word to be *chocolate*. This would be based primarily on the statistics that chocolate is seen much more frequently in this exact sequence, and not just the common sense that zucchinis are gross.
+
+<br>
+
+#### Our Project Roadmap
+
+We will delve into each step in its respective section, but for now, here are the steps we will follow in this document:
+
+  1. Install necessary packages
+  2. Import the provided text data
+  3. Briefly review this data
+  4. Clean our provided data
+  5. Create a dataframe of n-grams from our cleaned dataset
+  6. Review our raw n-gram dataframe
+  7. Reduce and clean our n-gram dataframe
+  8. Review our cleaned n-gram dataframe
+  9. Create a lookup table for all input n-grams
+  10. Create an algorithm for predicting the next word
+  11. Test our prediction algorithm on some example text
+  12. Measure the speed, accuracy, and memory usage of our approach
+
+### Package Installation
+
+```{r Import Statements, message=FALSE, warning=FALSE}
+require(knitr) # For prettier output tables
+require(kableExtra)
+require(rlist) # Used for saving and loading lists
+require(tidyverse) # Used extensively
+require(data.table) # Better alternative to Data.Frames
+require(tm) # Text Cleaning and Processing
+require(corpus)
+require(textclean)
+require(quanteda)
+require(future.apply) # Parallel Processing to significantly speed up large operations
+require(parallel)
+require(readtext) # Used for reading in profanity text
+require(reshape) # Used for colsplit function
+require(rbenchmark) # For Measuring the Model's Speed
+require(grid) # Plotting images in specified layouts
+require(gridExtra)
+```
+
+### Importing the Provided Text Data
+
+For this project we are given a set of text files from [Coursera](https://www.coursera.org/learn/data-science-project/supplement/idhGA/syllabus) that we need to first import. The following code chunk creates a directory called 'data' if it does not already exist, and downloads the Coursera text data if it has not already been downloaded:
+```{r Import Data, include=TRUE, eval=FALSE}
+if(!file.exists("./data")){dir.create("./data")}
+
+dataUrl <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+fileName <- "./data/SwiftKey.zip"
+if(!file.exists(fileName)){
+        download.file(dataUrl, destfile=fileName)
+        unzip(fileName, exdir = "./data")
+}
+```
+
+<br>
+
+#### Reviewing Our Given Data
+
+The dataset that we downloaded conatained text in various languages for the different students that may work on this assignment. For the remainder of this project we will only work with the three English text files:
+
+  1. en_US.blogs.txt
+  2. en_US.news.txt
+  3. en_US.twitter.txt
+  
+Before we begin working with this data, we first need to understand the data. 
+For example: 
+
+* How long are the individual lines? 
+* How much data is there?
+
+```{r File Statistics, echo=FALSE, eval=TRUE}
+# File Size (converted to Mb)
+blogs_size <- round(file.info("./data/final/en_US/en_US.blogs.txt")$size/1000000, 2)
+news_size <-  round(file.info("./data/final/en_US/en_US.news.txt")$size/1000000, 2)
+twitter_size <-  round(file.info("./data/final/en_US/en_US.twitter.txt")$size/1000000, 2)
+
+# Read in lines
+blog_lines <- readLines("./data/final/en_US/en_US.blogs.txt", encoding="UTF-8")
+news_lines <- readLines("./data/final/en_US/en_US.news.txt", encoding="UTF-8", warn=FALSE)
+twitter_lines <- readLines("./data/final/en_US/en_US.twitter.txt", encoding="UTF-8", warn=FALSE)
+
+# Number of lines: Not the same as sentences.
+blog_num_lines <-  length(blog_lines)
+news_num_lines <-  length(news_lines)
+twitter_num_lines <-  length(twitter_lines)
+
+# Average Line Length
+blog_avg_line <-  mean(nchar(blog_lines))
+news_avg_line <-  mean(nchar(news_lines))
+twitter_avg_line <-  mean(nchar(twitter_lines))
+
+# Length of respective longest lines
+blog_longest_line <-  max(nchar(blog_lines))
+news_longest_line <-  max(nchar(news_lines))
+twitter_longest_line <-  max(nchar(twitter_lines))
+
+# Put data into a data.frame to output
+review_dt <- data.frame("File" = c("en_US.blogs.txt", "en_US.news.txt", "en_US.twitter.txt"),
+                      "Number_of_Lines" = c(blog_num_lines, news_num_lines, twitter_num_lines),
+                      "Average_Line_Length" = c(blog_avg_line, news_avg_line, twitter_avg_line),
+                      "Longest_Line_Length" = c(blog_longest_line, news_longest_line, twitter_longest_line),
+                      "File_Size_in_Mb" = c(blogs_size, news_size, twitter_size))
+
+kable(review_dt) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE) %>%
+  column_spec(1, width = "30em", bold = T, border_right = T, background = "#C3C3B9") %>%
+  column_spec(2, width = "30em", border_right = T, background = "SkyBlue") %>%
+  column_spec(3, width = "30em", border_right = T, background = "#C3C3B9") %>%
+  column_spec(4, width = "30em", border_right = T, background = "SkyBlue") %>%
+  column_spec(5, width = "30em", border_right = T, background = "#C3C3B9")
+```
+
+We can see that the dataset was likely from before twitter expanded their character limit to 280, as the longest length is 140 characters.
+We have significantly more lines of data from twitter, however, due to the character limit twitter data takes up the least memory.
+
+### Text Cleaning Process
+
+Before randomly trying to fix our text, let us first look at a random sample of lines from our data like so:
+```{r Print Random Lines, echo=FALSE, eval=TRUE}
+set.seed(1)
+
+# Merge data together
+total_text <- c(blog_lines, news_lines, twitter_lines)
+
+# random lines
+rand_lines <- total_text[sample(1:length(total_text), 3)]
+
+text_tbl <- data.frame(
+  Lines = c("Line 1", "Line 2", "Line 3"),
+  Raw_Text = c(rand_lines[1], rand_lines[2], rand_lines[3])
+)
+# print lines
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, width = "5em", bold = T, border_right = T, background = "#C3C3B9") %>%
+  column_spec(2, width = "60em", background = "SkyBlue")
+```
+
+From this sample of lines we can already see multiple features of English writing that can cause issues in our later predictions:
+
+ 1. Inconsistent capitalization of words
+ 2. Lazy punctuation (dont instead of don't)
+ 3. Misspellings (whirpool vs Whirlpool)
+ 4. Shorthand notation (Ex. w/ min)
+ 5. Using numbers as a substitution for words (Ex. 4 as for)
+ 6. Twitter specific writing (Hash tags like #packers and #mubb)
+ 
+This leads us to one of our largest steps, which is properly cleaning the input text for analysis.
+ 
+Text cleaning processes can range from simply not cleaning the text to intensively correcting all misspellings and other typos. Text cleaning needs to be careful not to introduce additional tokens or errors, so a limited approach can often be best. The following are the steps I have employed based on errors in the provided dataset:
+
+1. Split text into sentences
+2. Lower case all text (Ex. CaMeLs -> camels)
+3. Replace Unicode issues (Ex. êéè -> e)
+4. Replace common twitter notation (Ex. RT -> retweet)
+5. Replace contractions with their elongated form (Ex. won't -> will not)
+6. Replace character elongation (Ex. whyyyyyyy -> why)
+7. Replace ordinal numbers (Ex. 1st -> first)
+8. Replace the numbers 0 through 10 with word equivalent (Ex. 0 -> zero)
+9. Remove possessive 's (Ex. child's -> child)
+10. Fix specific common issues
+11. Remove urls
+12. Remove remaining punctuation and numbers
+13. Remove any remaining non ASCII characters
+14. Remove common ambiguous characters (Ex. letters like d or m)
+15. Add a token to the start of each sentence
+16. Remove profanity
+
+This level of cleaning is likely on the more extreme side and actually ends up being the most time costly step in our final approach.
+
+```{r include=FALSE, eval=FALSE}
+# CLEANUP
+all <-ls()
+keep <- c("rand_lines")
+remove <- setdiff(all, keep)
+rm(list = remove)
+rm(remove)
+rm(all)
+rm(keep)
+```
+
+<br>
+
+#### Text Cleaning: Functions
+
+When reading a sentence the following two words may look the same to humans: *don′t* and *don’t*. When doing text analysis though, these are two distinct tokens and neither of which is identical to the intended word *don't*. In each of these three cases a different character is used as the apostrophe character. When studying the provided dataset I ran into many similar character issues and wrote a function, **unicode_fix**, that captures the most common examples but does not fully cover all potential problems.
+
+```{r Function unicode_fix, echo=FALSE}
+unicode_fix <- function(txt){
+        output_txt <- gsub('[”“\u2033]', '"', txt, perl=TRUE)
+        output_txt <- gsub('[\u2018\u2019\u2032\u00B4\u0092]', "'", output_txt, perl=TRUE)
+        output_txt <- gsub('[—–]', "-", output_txt, perl=TRUE)
+        output_txt <- gsub('…', "...", output_txt, perl=TRUE)
+        output_txt <- gsub('：', ":", output_txt, perl=TRUE)
+        
+        output_txt <- gsub('[\u01CE\u00E0äàáã\u00E2\u0101\u0430]', "a", output_txt, perl=TRUE)
+        output_txt <- gsub('[ç\u010D]', "c", output_txt, perl=TRUE)
+        output_txt <- gsub('[êéè]', "e", output_txt, perl=TRUE)
+        output_txt <- gsub('[í\u00ED\u012B\u1ECB]', "i", output_txt, perl=TRUE)
+        output_txt <- gsub('[ñ\u1E47]', "n", output_txt, perl=TRUE)
+        output_txt <- gsub('[ốôờøó\u01A1\u00F6\u1EDB\u1ED9\u00F0]', "o", output_txt, perl=TRUE)
+        output_txt <- gsub('[\u1E5B]', "r", output_txt, perl=TRUE)
+        output_txt <- gsub('[\u015A\u1E63\u015B]', "s", output_txt, perl=TRUE)
+        output_txt <- gsub('[üú\u01B0\u016B]', "u", output_txt, perl=TRUE)
+        
+        output_txt <- gsub('¼', "a quarter", output_txt, perl=TRUE)
+        output_txt <- gsub('½', "a half", output_txt, perl=TRUE)
+        output_txt <- gsub('⅛', "an eighth", output_txt, perl=TRUE)
+        output_txt <- gsub('⅔', "two thirds", output_txt, perl=TRUE)
+        
+        return(output_txt)
+}
+```
+
+
+
+The function **text_fix** covers a wide range of fixes to the text, but does not delete whole words. The steps 4-10 listed above are all covered within the **text_fix** function. This function is one of the most time consuming aspects of our text cleaning process due to the multiple *gsub* expressions and helpful functions from the *textclean* package.
+
+```{r Function text_fix, echo=FALSE}
+text_fix <- function(txt){
+    cleaned_text <- gsub("^RT[^a-zA-Z]", "retweet ", txt, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))[sS]/[Oo](?=( |$))", " shoutout ", cleaned_text, perl=TRUE)      
+    
+    cleaned_text <- textclean::replace_contraction(cleaned_text) %>% char_tolower()
+    cleaned_text <- textclean::replace_word_elongation(cleaned_text)
+    cleaned_text <- gsub("where'd", " where did ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("haven't", " have not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("hadn't", " had not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("there'd", " there would ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("y'all", " you all ", cleaned_text, perl=TRUE)
+    
+    cleaned_text <- replace_ordinal(cleaned_text)
+    cleaned_text <- gsub("((?<=^)|(?<= ))0(?=( |$))", " zero ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))1(?=( |$))", " one ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))2(?=( |$))", " two ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))3(?=( |$))", " three ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))4(?=( |$))", " four ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))5(?=( |$))", " five ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))6(?=( |$))", " six ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))7(?=( |$))", " seven ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))8(?=( |$))", " eight ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))9(?=( |$))", " nine ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))10(?=( |$))", " ten ", cleaned_text, perl=TRUE)
+    ## Fix possessive. Must come after the contraction fix
+    cleaned_text <- gsub("([a-z])'s([^a-z])", "\\1\\2", cleaned_text, perl=TRUE)
+
+    # Specific Common fixes
+    cleaned_text <- gsub("((?<=^)|(?<= ))fwd(?=( |$))", " forward ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))t-shirt", " tshirt", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))a.m.(?=( |$))", " am ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))p.m.(?=( |$))", " pm ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))ff(?=( |$))", " forfeit ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))tho(?=( |$))", " though ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))dm(?=( |$))", " direct message ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))b/c(?=( |$))", " because ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))im(?=( |$))", " i am ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))rt(?=( |$))", " right ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))u(?=( |$))", " you ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))r(?=( |$))", " are ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))w(?=( |$))", " with ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))k(?=( |$))", " okay ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))yea(?=( |$))", " yeah ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))dont(?=( |$))", " do not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))cant(?=( |$))", " can not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))u.s.(a.?)?(?=( |$))", " united states ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))the u.?s.?(a.?)?(?=( |$))", " the united states ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))wanna(?=( |$))", " want to ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))gonna(?=( |$))", " going to ", cleaned_text, perl=TRUE)
+    
+    return(cleaned_text)
+}
+```
+
+
+Unlike the **text_fix** function the **text_delete** function fully removes text from the sentences and replaces them with a placeholder token, \<del>, so that later analysis knows that a word was once in that specific position and can be appropriately handled. The steps 11-14 listed above are all covered within the **text_delete** function.
+
+```{r Function text_delete, echo=FALSE}
+text_delete <- function(txt){
+        # Remove URLS
+        output_text <- gsub("((?<=^)|(?<= ))\\S*(www|\\.com)\\S*(?=( |$))", " <del> ", txt, perl=TRUE)
+        # Remove sentence ending punctuation
+        output_text <- gsub("[[:punct:]]+\\s*$", " ", output_text, perl=TRUE)
+        # Remove punctuation and digits
+        output_text <- gsub("(\\S*)[[:punct:]]+(?= )", "\\1", output_text, perl=TRUE)
+        output_text <- gsub("((?<=^)|(?<= ))\\S*([[:punct:]]+|[0-9]+)\\S*(?=( |$))", " <del> ", output_text, perl=TRUE)
+        # Delete remaining ASCII characters
+        output_text <- gsub('((?<=^)|(?<= ))\\S*[^\x20-\x7E]+\\S*(?=( |$))', ' <del> ', output_text, perl=TRUE)
+        # Delete certain individual letters or cases of 're'
+        output_text <- gsub('((?<=^)|(?<= ))(re|[bcdefghjklmnopqrstvwxyz])(?=( |$))', ' <del> ', output_text, perl=TRUE)
+
+        output_text <- gsub('<del>( +<del>)+', '<del>', output_text, perl=TRUE)
+        
+        return(output_text)
+}
+```
+
+The function **add_start** adds a start token, \<start>, at the beginning of each sentence. We can then treat the \<start> token as a unique token in our n-gram analysis.
+
+```{r Function add_start, echo=FALSE}
+add_start <- function(lines){
+        paste0("<start> ", lines)
+}
+```
+
+After fixing the text we will want to remove profanity. This prevents our system from recommending profanity to our users as well. I am using a list of 451 swear words provided by [Google](https://github.com/RobertJGabriel/Google-profanity-words) that I have slightly manually modified. I put the removal of profanity in a function named **remove_profanity** so that we can pipe this function along with our other text cleaning functions.
+
+```{r Import profanity text}
+profanity_words <- readtext("./data/swear_list.txt")
+profanity_words <- unlist(strsplit(profanity_words$text, split="\n")) %>% paste0(collapse='|')
+```
+
+```{r Function remove_profanity, echo=FALSE}
+remove_profanity <- function(txt){
+        # Remove words in the profanity list
+        output_text <- gsub(paste0('((?<=^)|(?<= ))(', profanity_words, ')()(?=( |$))'), ' <del> ', txt, perl=TRUE)
+        
+        return(output_text)
+}
+```
+
+Next we combine all of the above functions into a simple wrapper function, **split_and_clean**.
+
+```{r Function split_and_clean, echo=FALSE}
+split_and_clean <- function(text){
+        
+        output_text <- text %>% 
+                corpus() %>%
+                corpus_reshape(to = "sentences") %>%
+                tolower() %>% 
+                unicode_fix() %>%
+                text_fix() %>%
+                text_delete() %>%
+                add_start() %>%
+                remove_profanity()
+        
+        return(output_text)
+}
+```
+
+<br>
+
+#### Text Cleaning: Example
+
+Let us run our cleaning function, **split_and_clean**, on the example lines from before to see the effect.
+
+```{r Cleaned Text Example, echo=FALSE}
+clean_lines <- split_and_clean(rand_lines)
+
+text_tbl <- data.frame(
+  Lines = c("Line 1", "Line 2", "Line 3", "Line 4", "Line 5"),
+  Raw_Text = c(rand_lines[1], rand_lines[2], "", "", rand_lines[3]),
+  Cleaned_Text = c(clean_lines[1], clean_lines[2], clean_lines[3], clean_lines[4], clean_lines[5])
+)
+# print lines
+kable(text_tbl) %>%
+  kable_styling(full_width = F, position = "float_right") %>%
+  column_spec(1, width = "5em", bold = T, border_right = T, background = "#C3C3B9") %>%
+  column_spec(2, width = "30em", background = "SkyBlue") %>%
+  column_spec(3, width = "30em", background = "#1AD167")
+```
+
+We can see from our Cleaned_Text column that not all of the problems have been perfectly fixed:
+
+* 4 was replaced by four rather than for
+* Whirlpool is still misspelled as whirpool
+* We have multiple deletions that were not perfectly replaced
+
+These are trade-offs that have to be considered dring the text cleaning phase. For example, to correctly replace 4 with for could create problems in other situations where 4 is intended as the number. For this application we are proceeding with the cleaning in its current state.
+
+```{r echo=FALSE}
+# CLEANUP
+all <-ls()
+keep <- c("add_start", "remove_profanity", "split_and_clean", "text_delete", "text_fix", "unicode_fix", "profanity_words")
+remove <- setdiff(all, keep)
+rm(list = remove)
+rm(remove)
+rm(all)
+rm(keep)
+```
+
+<br>
+
+#### Text Cleaning: Cleaning Our Dataset
+
+Using the functions we have written above, we will clean all of the data provided. Starting from scratch, the first step is to load in and combine all of our text data into the variable **total_text**.
+
+```{r}
+file_name_blog <- "./data/final/en_US/en_US.blogs.txt"
+file_name_news <- "./data/final/en_US/en_US.news.txt"
+file_name_twitter <- "./data/final/en_US/en_US.twitter.txt"
+
+text_blog <- readLines(file_name_blog, encoding="UTF-8")
+text_news <- readLines(file_name_news, encoding="UTF-8", warn=FALSE)
+text_twitter <- readLines(file_name_twitter, encoding="UTF-8", warn=FALSE)
+
+total_text <- c(text_blog, text_news, text_twitter)
+```
+
+<br>
+
+Next we want to split our data into a training set and a testing set. To reproducibly split the data into user-defined proportions we can use the function **train_test_split**. Below we split our entire text set into a 7:3 split with a seed of 1 for repeatability. Then we clean our training set while leaving our testing set as the raw data.
+
+```{r Function train_test_split, echo=FALSE}
+train_test_split <- function(total_text, train_split=0.7, number_of_lines=FALSE, seed=FALSE){
+  #----Inputs----
+  # total_text is designed to be the entire raw set of text
+  # train_split dictates the training/testing split. 0.7 (default) indicates that 70% of the text is used for trainign and 30% is used for testing.
+  # number_of_lines indicates the number of lines from total_tetx to use. If left at FALSE, all of the lines in total_text are used. 
+      # This was mainly used during development to use smaller sets of text.
+  # seed is optional for repeatable results. If left empty then it is random.
+  
+  #----Outputs----
+  # list where the first entry is the training set and the second entry is the testing set
+  
+  if (seed != FALSE){
+    set.seed(seed)
+  }
+  if (number_of_lines > length(total_text) || number_of_lines == FALSE){
+    number_of_lines=length(total_text)
+  }
+  line_numbers <- sample(1:length(total_text), number_of_lines, replace=F)
+  train_limit <- floor(number_of_lines*train_split)
+  train_text <- total_text[line_numbers[1:train_limit]]
+  test_text <- total_text[line_numbers[-c(1:train_limit)]]
+
+  return(list(train_text, test_text))
+}
+```
+
+
+```{r eval=FALSE, include=TRUE}
+split_data <- train_test_split(total_text, train_split=0.7, number_of_lines=FALSE, seed=1)
+
+cleaned_training_sentences <- split_and_clean(split_data[[1]])
+raw_testing_sentences <- split_data[[2]]
+```
+
+```{r eval=FALSE, include=FALSE}
+save(cleaned_training_sentences, file = "./data/cleaned_training_sentences.RData")
+save(raw_testing_sentences, file = "./data/raw_testing_sentences.RData")
+```
+
+```{r eval=TRUE, echo=FALSE}
+all <-ls()
+keep <- c("add_start", "remove_profanity", "split_and_clean", "text_delete", "text_fix", "unicode_fix", "profanity_words", "cleaned_training_sentences")
+remove <- setdiff(all, keep)
+rm(list = remove)
+rm(remove)
+rm(all)
+rm(keep)
+```
+
+<br>
+
+### N-gram Dataframe Creation Process
+
+Now that we have cleaned and prepared all of our training text, we want to count the frequency of each n-gram in our text. For our prediction model we will use all of the n-grams up to size 5 (1-grams, 2-grams, 3-grams, 4-grams, and 5-grams). We have a large training dataset, so we will loop through our training data in batches to limit the memory consumption used at any one time. We will perform the following steps in each loop cycle:
+
+1. Count the frequency of all n-grams in the next batch of data using Quanteda's **tokens** function.
+2. Remove any n-grams with the \<del> token. This reduces incoherent strings of text from our text cleaning process.
+3. Merge this new set of n-gram counts with our running totals into a single dataframe using our function **merge_token_tables**.
+ 
+```{r Function merge_token_tables, echo=FALSE}
+merge_token_tables <- function(dt1, dt2){
+        
+        output_dt <- data.table(merge(dt1, dt2, by=c("feature"), all=TRUE)) %>%
+                replace(is.na(.), 0) %>%
+                mutate(frequency = frequency.x + frequency.y) %>%
+                select(feature, frequency)
+        
+        return(output_dt)
+}
+```
+
+<br>
+
+Below is our batched process for creating the raw n-gram dataframe:
+
+```{r raw tok dataframe, include=TRUE, eval=FALSE}
+total_lines <- length(cleaned_training_sentences)
+#Defines the number of lines processed in each batch
+inc_size <- 200000
+# Start at step 1 and increment by inc_size each batch until all lines are processed.
+step <- 1
+
+toks <- cleaned_training_sentences[step:(step + inc_size)] %>% 
+        tokens(what = "fastestword")
+
+tok_dt <- data.table(select(textstat_frequency(dfm(toks, ngrams = 1:5)), feature, frequency)) %>%
+        filter(!grepl("<del>", feature, fixed = TRUE))
+
+step <- step + inc_size
+
+while (step < total_lines){
+        toks <- cleaned_training_sentences[step:(step + inc_size)] %>% 
+                tokens(what = "fastestword")
+        
+        tok_dt <- data.table(select(textstat_frequency(dfm(toks, ngrams = 1:5)), feature, frequency)) %>%
+                filter(!grepl("<del>", feature, fixed = TRUE)) %>%
+                merge_token_tables(tok_dt)
+        step <- step + inc_size
+        
+        print(paste0("Line: ", step, " of ", total_lines))
+}
+```
+
+```{r include=FALSE, eval=FALSE}
+save(tok_dt, file = "./data/tok_dt.RData")
+```
+
+```{r echo=FALSE, eval=FALSE}
+load("./data/tok_dt.RData")
+```
+
+<br>
+
+#### N-gram Dataframe(Raw) Review
+
+After going through our entire training set, we have a very large dataframe that requires 6.90 Gb of memory. Before we perform any cleaning or filtering steps, let us take a look at some of the most commonly occuring n-grams to get a better understanding of our data. First, we split our large dataframe into 5 separate dataframes based on the n-grams (a 1-gram data.frame, a 2-gram data.frame, ...) using **split_tokens**:
+
+```{r Function split_tokens, echo=FALSE}
+split_tokens <- function(dt){
+  output_dt <- list()
+        
+  output_dt$gram1 <- subset(dt, grepl('^[^_]*$', feature))
+  colnames(output_dt$gram1) <- c("token", "frequency")
+  output_dt$gram1 <- setorder(output_dt$gram1, -frequency)
+        
+  output_dt$gram2 <- subset(dt, grepl('^[^_]*(_[^_]*){1}$', feature))
+  colnames(output_dt$gram2) <- c("token", "frequency")
+  output_dt$gram2 <- setorder(output_dt$gram2, -frequency)
+  
+  output_dt$gram3 <- subset(dt, grepl('^[^_]*(_[^_]*){2}$', feature))
+  colnames(output_dt$gram3) <- c("token", "frequency")
+  output_dt$gram3 <- setorder(output_dt$gram3, -frequency)
+  
+  output_dt$gram4 <- subset(dt, grepl('^[^_]*(_[^_]*){3}$', feature))
+  colnames(output_dt$gram4) <- c("token", "frequency")
+  output_dt$gram4 <- setorder(output_dt$gram4, -frequency)
+  
+  output_dt$gram5 <- subset(dt, grepl('^[^_]*(_[^_]*){4}$', feature))
+  colnames(output_dt$gram5) <- c("token", "frequency")
+  output_dt$gram5 <- setorder(output_dt$gram5, -frequency)
+  
+  return(output_dt)
+}
+```
+
+```{r include=TRUE, eval=FALSE}
+split_ngrams <- split_tokens(tok_dt)
+```
+
+```{r include=FALSE, eval=FALSE}
+list.save(split_ngrams, "./data/split_ngrams.RData")
+```
+
+```{r echo=FALSE, eval=TRUE}
+split_ngrams <- list.load("./data/split_ngrams.RData")
+```
+
+<br>
+
+Once our n-grams are properly split into their respective dataframes, we can observe some basic statistics on the different n-grams using **basic_stats_table**:
+```{r Function basic_stats_table, echo=FALSE}
+basic_stats_table <- function(ngram_df){
+  
+  stats_tbl <- data.frame(Basic_Stats = c("Unique Tokens", "Total Tokens", "Top 5 Token Coverage", "Unique Tokens for 50% Coverage",
+                                       "Unique Tokens for 75% Coverage", "Unique Tokens for 90% Coverage", "Unique Tokens for 99% Coverage" ))
+  
+  for (i in 1:5){      
+    reduced_ngram_df <- ngram_df[[paste0("gram", as.character(i))]]
+    
+    # Need to sort by frequency first (for running totals)
+    reduced_ngram_df <- setorder(reduced_ngram_df, -frequency)
+    
+    # Unique tokens
+    num_unique_tokens <- nrow(reduced_ngram_df)
+    
+    # Number of Total
+    num_total_tokens <- sum(reduced_ngram_df$frequency)
+    
+    # Running Total and Cumulative Totals
+    reduced_ngram_df[,"freq_running"] <- cumsum(reduced_ngram_df$frequency)
+    reduced_ngram_df <- reduced_ngram_df %>% mutate(running_percent = freq_running/num_total_tokens)
+    
+    # Put it all together
+    stats_tbl[[paste0(as.character(i), "-gram")]] <- c(num_unique_tokens, num_total_tokens, 
+                                                       paste0(as.character(round(100*reduced_ngram_df$running_percent[5], 2)), "%"),
+                                                       which(reduced_ngram_df$running_percent >= 0.50)[1],
+                                                       which(reduced_ngram_df$running_percent >= 0.75)[1],
+                                                       which(reduced_ngram_df$running_percent >= 0.90)[1],
+                                                       which(reduced_ngram_df$running_percent >= 0.99)[1])
+  }
+  
+  return(stats_tbl)
+}
+```
+
+```{r echo=FALSE, eval=FALSE}
+basic_stats_df <- basic_stats_table(split_ngrams)
+```
+
+```{r include=FALSE, eval=FALSE}
+save(basic_stats_df, file = "./data/basic_stats_df.RData")
+```
+
+```{r echo=FALSE, eval=TRUE}
+load("./data/basic_stats_df.RData")
+```
+
+```{r Display Raw N-Gram Basic Stats Table, echo=FALSE}
+kable(basic_stats_df) %>%
+  kable_styling(full_width = F, position = "float_right") %>%
+  column_spec(1, width = "25em", bold = T, border_right = T, background = "#C3C3B9") %>%
+  column_spec(2, width = "30em", background = "SkyBlue") %>%
+  column_spec(3, width = "30em", background = "#C3C3B9")%>%
+  column_spec(4, width = "30em", background = "SkyBlue") %>%
+  column_spec(5, width = "30em", background = "#C3C3B9")%>%
+  column_spec(6, width = "30em", background = "SkyBlue")
+```
+
+From the above table we can see that our dataset contains a very large number of tokens. An interesting charcteristic of our data is the unique tokens required for 99% coverage. For the 1-gram dataframe, only about 57,000 tokens are needed for 99% coverage out of about 300,000 total tokens. This is roughly a sixth of the unique tokens accounting for 99% of all of the words in our data. Drastically different is our 5-gram dataframe which requires about 99% of its unique tokens for 99% coverage. This means almost all 5-grams are seen only once.
+
+For each of our n-gram dataframes, let us see which tokens are the most frequent using **plot_top_ngrams**:
+
+```{r Function plot_top_ngrams, echo=FALSE}
+plot_top_ngrams <- function(split_ngram){
+  
+  p <- list()
+  for (ngram_num in 1:5){
+        reduced_df <- split_ngram[[paste0("gram", as.character(ngram_num))]]
+
+        p[[as.character(ngram_num)]] <- ggplot(reduced_df[1:10,],
+                    mapping=aes(x= reorder(token, -frequency),
+                                y = frequency, fill=frequency)) +
+                geom_bar(stat="identity") +
+                xlab("N-Grams") +
+                ylab("Frequency") +
+                ggtitle(paste0("Frequency of Top 10 ", as.character(ngram_num), "-Grams")) +
+                theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        
+        # Fix scientific notation being displayed
+        opt <- options("scipen" = 20)
+  }  
+  
+  return(p)
+}
+```
+
+```{r echo=FALSE, eval=TRUE}
+top_ngram_plots <- plot_top_ngrams(split_ngrams)
+```
+
+```{r include=FALSE, eval=FALSE}
+list.save(top_ngram_plots, "./data/top_ngram_plots.RData")
+```
+
+```{r include=FALSE, eval=FALSE}
+top_ngram_plots <- list.load("./data/top_ngram_plots.RData")
+```
+
+<br>
+
+##### Most Frequent N-Grams (Raw N-Gram Dataframe)
+
+```{r echo = FALSE, eval=TRUE, fig.width = 12}
+grid.arrange(top_ngram_plots[[1]], top_ngram_plots[[2]], ncol = 2)
+grid.arrange(top_ngram_plots[[3]], top_ngram_plots[[4]], top_ngram_plots[[5]], ncol = 3)
+```
+
+The above plots show the most frequent 10 n-grams of each length from our dataframes. We can see many common tokens and phrases that we should expect such as the words *the*, *to*, and *i*. At a frequency of slightly more than 4000 occurences, our most common 5-gram is \<start>_i_am_going_to which simply means a sentence starting with the common phrase *I am going to*.
+
+```{r Function ngram_frequency, echo=FALSE}
+ngram_frequency <- function(split_ngram){
+  
+  p <- list()
+  for (ngram_num in 1:5){
+        reduced_df <- split_ngram[[paste0("gram", as.character(ngram_num))]]
+        
+        freq_counts_df <- data.frame(table(reduced_df$frequency))
+        freq_counts_df <- setorder(freq_counts_df, -Freq)
+        colnames(freq_counts_df) <- c("Frequency", "freq_counts")
+        # browser()
+        p[[as.character(ngram_num)]] <- ggplot(freq_counts_df[1:10,],
+                    mapping=aes(x= reorder(Frequency, -freq_counts),
+                                y = freq_counts, fill=freq_counts)) +
+                geom_bar(stat="identity") +
+                xlab("Frequency") +
+                ylab("Number of N-Grams") +
+                ggtitle(paste0("Frequency of ", as.character(ngram_num), "-Gram Counts")) +
+                theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        
+        # Fix scientific notation being displayed
+        opt <- options("scipen" = 20)
+  }  
+  
+  return(p)
+}
+```
+
+```{r echo=FALSE, eval=TRUE}
+ngram_freq_plots <- ngram_frequency(split_ngrams)
+```
+
+```{r include=FALSE, eval=FALSE}
+list.save(ngram_freq_plots, "./data/ngram_freq_plots.RData")
+```
+
+```{r include=FALSE, eval=FALSE}
+ngram_freq_plots <- list.load("./data/ngram_freq_plots.RData")
+```
+
+From the above plots we can see that a handful of n-grams appear extremely frequently. Another interesting feature of our data, however, is how many tokens appear at certain frequencies. For example, how many 5-grams only appear once. We can observe this feature for each of our n-gram dataframes below using **ngram_frequency**.
+
+<br>
+
+##### Frequency of N-Grams Counts (Raw N-Gram Dataframe)
+
+```{r echo = FALSE, eval=TRUE, fig.width = 12}
+grid.arrange(ngram_freq_plots[[1]], ngram_freq_plots[[2]], ncol = 2)
+grid.arrange(ngram_freq_plots[[3]], ngram_freq_plots[[4]], ngram_freq_plots[[5]], ncol = 3)
+```
+
+
+The main observation from the above graphs is that all 5 of our n-gram dataframes consist of mainly n-grams that only appear once. This disproportionate distribution is clear for our 1-grams and only widens as the n-gram length increases to our 5-grams.
+
+```{r echo=FALSE, eval=TRUE}
+# CLEANUP
+all <-ls()
+keep <- c("add_start", "remove_profanity", "split_and_clean", "text_delete", "text_fix", 
+          "unicode_fix", "profanity_words", "basic_stats_table", "ngram_frequency",
+          "plot_top_ngrams")
+remove <- setdiff(all, keep)
+rm(list = remove)
+rm(remove)
+rm(all)
+rm(keep)
+```
+
+### Reducing Our N-gram Dataframe 
+
+From the analysis we have shown above, we have a very large collection of n-grams. Especially in the case of higher n-grams (such as 5-grams), many of which occur extremely infrequently. Our next step will be to reduce our total n-grams through cleaning and filtering. This reduction will improve our application's speed, performance, and memory usage. 
+
+Cleaning Steps Taken:
+
+1. Convert our large individual token dataframe *tok_dt* into a datatable
+2. Remove any tokens with illegitamte characters
+3. Remove any n-grams that appear only once
+4. Split our n-gram datatable into 5 n-gram datatables. One for each length of n-gram.
+5. Remove tokens that appear less than 100 times and any corresponding n-grams
+6. Next we recombine all 5 datatables back into 1 datatable, similar to the original *tok_dt* dataframe, and name it *split_ngram_merged*.
+
+<br>
+
+First, we will convert our large individual token dataframe **tok_dt** into a datatable for performance improvements and remove any n-grams with illegitimate characters that were missed by our earlier cleaning functions:
+```{r include=TRUE, eval=FALSE}
+tok_dt <- as.data.table(tok_dt)
+# remove any tokens with illegitamte characters that snuck through the cleaning
+tok_dt <- subset(tok_dt, !grepl('[^a-zA-Z_<>]', feature))
+```
+
+Next we will remove any n-grams that appear only once. This will drastically reduce the number of n-grams stored in our datatables while not sacrificing much accuracy if it all.
+```{r include=TRUE, eval=FALSE}
+overall_cutoff <- 1
+tok_dt <- tok_dt[frequency > overall_cutoff]
+```
+
+```{r Function split_token_dt, echo=FALSE}
+split_token_dt <- function(dt){
+  output_dt <- list()
+        
+  output_dt$gram1 <- subset(dt, grepl('^[^_]*$', feature))
+  colnames(output_dt$gram1) <- c("token", "frequency")
+        
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){1}$', feature))
+  output_dt$gram2 <- cbind(temp$frequency, colsplit(temp$feature, "_", c("token_1_before", "token")))
+  colnames(output_dt$gram2) <- c("frequency", "token_1_before", "token")
+
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){2}$', feature))
+  output_dt$gram3 <- cbind(temp$frequency, colsplit(temp$feature, "_", c("token_2_before", "token_1_before", "token")))
+  colnames(output_dt$gram3) <- c("frequency", "token_2_before", "token_1_before", "token")
+
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){3}$', feature))
+  output_dt$gram4 <- cbind(temp$frequency, colsplit(temp$feature, "_", c("token_3_before", "token_2_before", "token_1_before", "token")))
+  colnames(output_dt$gram4) <- c("frequency", "token_3_before", "token_2_before", "token_1_before", "token")
+
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){4}$', feature))
+  output_dt$gram5 <- cbind(temp$frequency, colsplit(temp$feature, "_", 
+                                                              c("token_4_before", "token_3_before", "token_2_before", "token_1_before", "token")))
+  colnames(output_dt$gram5) <- c("frequency", "token_4_before", "token_3_before", "token_2_before", "token_1_before", "token")
+        
+  return(output_dt)
+}
+```
+
+Now we will split our n-gram dataframe into 5 n-gram datatables. One for each length of n-gram.
+```{r include=TRUE, eval=FALSE}
+split_ngram_reduced <- split_token_dt(tok_dt)
+# Slightly clean the 1 gram
+split_ngram_reduced$gram1 <- subset(split_ngram_reduced$gram1, !grepl('[<>]', token))
+# Rearrange dataframe columns to put frequency at the end
+for (i in 1:5){
+        split_ngram_reduced[[paste0("gram", as.character(i))]] <- split_ngram_reduced[[paste0("gram", as.character(i))]] %>% select(-frequency, everything())
+}
+```
+
+```{r include=FALSE, eval=FALSE}
+list.save(split_ngram_reduced, "./data/split_ngram_reduced.RData")
+```
+
+```{r include=FALSE, eval=FALSE}
+split_ngram_reduced <- list.load("./data/split_ngram_reduced.RData")
+```
+
+Next we will remove tokens that appear less than 100 times and any corresponding n-grams containing these tokens. For example, let us imagine that the token *cocoapuff* occured 10 times. We are now removing this token as well as all n-grams that contain this token.
+```{r include=TRUE, eval=FALSE}
+base_token_cutoff <- 100
+
+g <- filter(split_ngram_reduced$gram1, frequency < base_token_cutoff) %>% select(token)
+g <- g[[1]]
+# define a function for the negation of %in%
+`%nin%` = Negate(`%in%`)
+for (i in 1:5){
+        split_ngram_reduced[[paste0("gram", as.character(i))]] <- filter_all(split_ngram_reduced[[paste0("gram", as.character(i))]], all_vars(. %nin% g))
+}
+```
+
+Next we recombine all of our dataframes into an individual dataframe with two columns (frequency and token).
+```{r Function compress_token_dt, echo=FALSE}
+compress_token_dt <- function(dt){
+  
+  gram_list <- list()
+
+  # modify gram1
+  gram_list$gram1 <- dt$gram1 %>% setorder(-frequency)
+  # modify gram2
+  gram_list$gram2 <- dt$gram2 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  # modify gram3
+  gram_list$gram3 <- dt$gram3 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_2_before, token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  # modify gram4
+  gram_list$gram4 <- dt$gram4 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_3_before, token_2_before, token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  # modify gram5
+  gram_list$gram5 <- dt$gram5 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_4_before, token_3_before, token_2_before, token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  
+  return(gram_list)
+}
+```
+
+```{r include=TRUE, eval=FALSE}
+split_ngram_merged <- compress_token_dt(split_ngram_reduced)
+```
+
+```{r include=FALSE, eval=FALSE}
+list.save(split_ngram_merged, "./data/split_ngram_merged.RData")
+```
+
+```{r echo=FALSE, eval=TRUE}
+split_ngram_merged <- list.load("./data/split_ngram_merged.RData")
+```
+
+<br>
+
+#### N-gram Dataframe(Reduced) Review
+
+Now that we have drastically reduced our n-gram dataframe, we can look at the same features as before and compare the differences:
+
+```{r echo=FALSE, eval=FALSE}
+basic_stats_df_reduced <- basic_stats_table(split_ngram_merged)
+```
+
+```{r Load basic_stats_df_reduced, echo=FALSE}
+load("./data/basic_stats_df_reduced.RData")
+```
+
+```{r echo=FALSE}
+# Display Basic Stats Table
+kable(basic_stats_df_reduced) %>%
+  kable_styling(full_width = F, position = "float_right") %>%
+  column_spec(1, width = "25em", bold = T, border_right = T, background = "#C3C3B9") %>%
+  column_spec(2, width = "30em", background = "SkyBlue") %>%
+  column_spec(3, width = "30em", background = "#C3C3B9")%>%
+  column_spec(4, width = "30em", background = "SkyBlue") %>%
+  column_spec(5, width = "30em", background = "#C3C3B9")%>%
+  column_spec(6, width = "30em", background = "SkyBlue")
+```
+
+Compared to the corresponding table for the raw n-gram dataframe, we have significantly reduced the number of unique tokens stored in our dataframes. For example, our 1-gram dataframe previously had about 52 million total tokens consisting of about 300,000 unique tokens. We have reduced those numbers down to about 47 million total tokens using only about 150,000 unique tokens.
+
+<br>
+
+##### Most Frequent N-Grams (Reduced N-Gram Dataframe)
+
+```{r echo=FALSE}
+top_ngram_plots_reduced <- plot_top_ngrams(split_ngram_merged)
+```
+
+```{r echo = FALSE, eval=TRUE, fig.width = 12}
+grid.arrange(top_ngram_plots_reduced[[1]], top_ngram_plots_reduced[[2]], ncol = 2)
+grid.arrange(top_ngram_plots_reduced[[3]], top_ngram_plots_reduced[[4]], 
+             top_ngram_plots_reduced[[5]], ncol = 3)
+```
+
+Other than removing the token <start > from the 1-gram dataframe, the most frequent n-grams of each dataframe have not been affected by our cleaning. This is because we focused on reducing memory by removing infrequent n-grams and not touching the common n-grams.
+
+<br>
+
+##### Frequency of N-Grams Counts (Reduced N-Gram Dataframe)
+
+```{r echo=FALSE, eval=TRUE}
+ngram_freq_plots_reduced <- ngram_frequency(split_ngram_merged)
+```
+
+```{r echo = FALSE, eval=TRUE, fig.width = 12}
+grid.arrange(ngram_freq_plots_reduced[[1]], ngram_freq_plots_reduced[[2]], ncol = 2)
+grid.arrange(ngram_freq_plots_reduced[[3]], ngram_freq_plots_reduced[[4]], 
+             ngram_freq_plots_reduced[[5]], ncol = 3)
+```
+
+From the above plots we can see that all n-grams with only 1 occurrence have been removed. Additionally all n-grams from the 1-gram dataframe with less than 100 occurrences have been removed.
+
+```{r include=FALSE, eval=FALSE}
+save(basic_stats_df_reduced, file = "./data/basic_stats_df_reduced.RData")
+list.save(top_ngram_plots_reduced, "./data/top_ngram_plots_reduced.RData")
+list.save(ngram_freq_plots_reduced, "./data/ngram_freq_plots_reduced.RData")
+```
+
+```{r echo=FALSE, eval=TRUE}
+# CLEANUP
+all <-ls()
+keep <- c("add_start", "remove_profanity", "split_and_clean", "text_delete", "text_fix", 
+          "unicode_fix", "profanity_words", "basic_stats_table", "ngram_frequency",
+          "plot_top_ngrams")
+remove <- setdiff(all, keep)
+rm(list = remove)
+rm(remove)
+rm(all)
+rm(keep)
+```
+
+<br>
+
+### Preparing our Lookup Table
+
+Now that we have reduced our data, we want to prepare it in such a way that we can immediately output the best predictions for a given input string. We will perform an algorithm on all of the potential input sequences and save the results in a lookup table. The algorithm we will be using is going to be a slight deviation from [Katz's back-off model](https://en.wikipedia.org/wiki/Katz%27s_back-off_model). Katz's back-off model takes into account the conditional probability of a word and uses the most reliable instance as the corresponding score for a word. For example, let us say we have the preceding text *I love to eat* and the word *chocolate* follows this sequence 80% of the times it occurs. However, if *chocolate* follows the phrase *love to eat*, *to eat*, or *eat* more than 80%, then we would use this larger percentage in our calculations rather than the 80%.
+
+The model used for this project uses the sum of conditional probabilities rather than the max conditional probabilities. Additionally, each token's corresponding sum is then adjusted inversely proportional to the token's frequency in our dataset. For example, let us say the words *bamboozle* and *the* are statistically equally likely the next word in a particular sequence. The word *the* occurs several thousands of times more frequently than the word *bamboozle* so *bamboozle* is given a higher adjusted score and is chosen as a better candidate than the word *the*.
+
+We will complete the following steps in order to create our lookup table:
+
+1. Split the tokens into 3 columns (token, frequency, and preceding) and 5 datatables (based on n-gram length)
+2. Compute the conditional probability of the top 5 tokens given any *preceding* text
+3. We add a datatable to our list of 5 datatables that just contains the probability of each token
+4. Create alist of all *preceding* text
+5. Initialize a results dataframe named **blank_df** to speed up our algorithm
+6. Run our function **preceding_top_5_speed** to create our lookup table.
+
+First we will start from our **split_ngram_merged** datatable that contains all of our n-grams and frequencies. We will use the function **split_preceding_tokens** to split these n-grams into 5 datatables again based on their n-gram length and each of these dataframes will have 3 columns (token, frequency, and preceding). 
+
+* token: The last token in the n-gram. (Ex. *chocolate* in the n-gram *I love to eat chocolate*)
+* frequency: The number of occurences of this n-gram
+* preceding: The tokens preceding the final token in the n-gram. This is left blank if the n-gram is a 1-gram. (Ex. *I love to eat* in the n-gram *I love to eat chocolate*)
+```{r Function split_preceding_tokens, include=FALSE}
+split_preceding_tokens <- function(dt){
+  
+  gram_list <- list()
+
+  # modify gram1
+  gram_list$gram1 <- data.table(dt$gram1, preceding ="")
+  
+  # modify gram2
+  gram_list$gram2 <- cbind(dt$gram2$frequency, colsplit(dt$gram2$token, " ", c("preceding", "token")))
+  colnames(gram_list$gram2) <- c("frequency", "preceding", "token")
+  gram_list$gram2 <- gram_list$gram2 %>% setcolorder(c("token", "frequency", "preceding"))
+  
+  # modify gram3
+  gram_list$gram3 <- cbind(dt$gram3$frequency, colsplit(dt$gram3$token, " ", c("token_2_before", "token_1_before", "token")))
+  gram_list$gram3$preceding <- paste(gram_list$gram3$token_2_before, gram_list$gram3$token_1_before)
+  colnames(gram_list$gram3) <- c("frequency", "token_2_before", "token_1_before", "token", "preceding")
+  gram_list$gram3 <- gram_list$gram3 %>% select(token, frequency, preceding)
+
+  # modify gram4
+  gram_list$gram4 <- cbind(dt$gram4$frequency, colsplit(dt$gram4$token, " ",
+                                                        c("token_3_before", "token_2_before", "token_1_before", "token")))
+  gram_list$gram4$preceding <- paste(gram_list$gram4$token_3_before, gram_list$gram4$token_2_before, 
+                                     gram_list$gram4$token_1_before)
+  colnames(gram_list$gram4) <- c("frequency", "token_3_before", "token_2_before", "token_1_before", "token", "preceding")
+  gram_list$gram4 <- gram_list$gram4 %>% select(token, frequency, preceding)
+
+  # modify gram5
+  gram_list$gram5 <- cbind(dt$gram5$frequency, colsplit(dt$gram5$token, " ",
+                                                        c("token_4_before", "token_3_before", "token_2_before", "token_1_before", "token")))
+  gram_list$gram5$preceding <- paste(gram_list$gram5$token_4_before, gram_list$gram5$token_3_before, 
+                                     gram_list$gram5$token_2_before, gram_list$gram5$token_1_before)
+  colnames(gram_list$gram5) <- c("frequency", "token_4_before", "token_3_before", "token_2_before", "token_1_before", "token", "preceding")
+  gram_list$gram5 <- gram_list$gram5 %>% select(token, frequency, preceding)
+  
+  return(gram_list)
+}
+```
+
+```{r include=TRUE, eval=FALSE}
+split_ngram_combined <- split_preceding_tokens(split_ngram_merged)
+```
+
+```{r include=FALSE, eval=FALSE}
+list.save(split_ngram_combined, "./data/split_ngram_combined.RData")
+```
+
+Next we compute the conditional probability of the top 5 n-grams corresponding to each unique *preceding* column in each datatable using **prep_dt_list**. Additionally we add a datatable to our list with the probability of each token.
+
+We will then have the following list of datatables:
+
+1. prepped_ngram$gram1 (1-grams)
+2. prepped_ngram$gram2 (2-grams)
+3. prepped_ngram$gram3 (3-grams)
+4. prepped_ngram$gram4 (4-grams)
+5. prepped_ngram$gram5 (5-grams)
+6. prepped_ngram$prob (token probability)
+```{r Function prep_dt_list, include=FALSE}
+# Takes in a list of 5 token dataframes and outputs 5 score data.tables and a probability table
+prep_dt_list <- function(dt, reduce_num = 5, score_mod = c(1.0, 1.0, 1.0, 1.0, 1.0)){
+  # returns 6 datatables in a list and sorts each of them by the column "preceding":
+  # $dt$prob - probability of each token = (token count)/(sum of all token counts)
+  # in the following comments the number 5 is controlled by the parameter "reduce_num"
+  # dt$gram1 - score for the top 5 individual tokens (words like "the" that appear extremely frequently.)
+  # dt$gram2 - bigrams:  For any given preceding text, keep the top 5 most likely tokens and save their scores.
+  # dt$gram3 - trigrams: For any given preceding text, keep the top 5 most likely tokens and save their scores.
+  # dt$gram4 - 4-grams:  For any given preceding text, keep the top 5 most likely tokens and save their scores.
+  # dt$gram5 - 5-grams:  For any given preceding text, keep the top 5 most likely tokens and save their scores.
+
+  dt$prob <- as.data.table(dt$gram1)
+  dt$prob <- dt$prob[, .(token, prob = frequency/sum(frequency))]
+  setkey(dt$prob, token)
+  
+  dt$gram1 <- as.data.table(dt$gram1)
+  dt$gram1 <- dt$gram1[, .(token, score1 = score_mod[1]*frequency/sum(frequency))]
+  dt$gram1 <- setorder(dt$gram1, -score1)[1:reduce_num]
+  dt$gram1 <- na.omit(dt$gram1)
+  
+  dt$gram2 <- as.data.table(dt$gram2)
+  dt$gram2 <- dt$gram2[,.(token, score2 = score_mod[2]*frequency/sum(frequency)), by=preceding]
+  dt$gram2 <- setorder(setDT(dt$gram2), -score2)[, head(.SD, reduce_num), keyby = preceding]
+  
+  dt$gram3 <- as.data.table(dt$gram3)
+  dt$gram3 <- dt$gram3[,.(token, score3 = score_mod[3]*frequency/sum(frequency)), by=preceding]
+  dt$gram3 <- setorder(setDT(dt$gram3), -score3)[, head(.SD, reduce_num), keyby = preceding]
+  
+  dt$gram4 <- as.data.table(dt$gram4)
+  dt$gram4 <- dt$gram4[,.(token, score4 = score_mod[4]*frequency/sum(frequency)), by=preceding]
+  dt$gram4 <- setorder(setDT(dt$gram4), -score4)[, head(.SD, reduce_num), keyby = preceding]
+  
+  dt$gram5 <- as.data.table(dt$gram5)
+  dt$gram5 <- dt$gram5[,.(token, score5 = score_mod[5]*frequency/sum(frequency)), by=preceding]
+  dt$gram5 <- setorder(setDT(dt$gram5), -score5)[, head(.SD, reduce_num), keyby = preceding]
+  
+  return(dt)
+}
+```
+
+```{r include=TRUE, eval=FALSE}
+prepped_ngram <- prep_dt_list(split_ngram_combined, 5, score_mod = c(1.0, 1.0, 1.0, 1.0, 1.0))
+```
+
+```{r include=FALSE, eval=FALSE}
+list.save(prepped_ngram, "./data/prepped_ngram.RData")
+```
+
+```{r include=FALSE, eval=FALSE}
+prepped_ngram <- list.load("./data/prepped_ngram.RData")
+```
+
+Next we create a list of all unique *preceding* values amongst our dataframes and name it **all_toks**.
+```{r include=TRUE, eval=FALSE}
+# First getting a list of all preceding text(preceding text being the words before the final token in bigrams, trigrams, 4-grams, and 5-grams)
+gram_list <- list()
+# Insert a placeholder for unigrams since they do not have any preceding text.
+gram_list$gram1 <- data.table(preceding ="<Null>") %>% select(preceding)
+gram_list$gram2 <- prepped_ngram$gram2 %>% select(preceding)
+gram_list$gram3 <- prepped_ngram$gram3 %>% select(preceding)
+gram_list$gram4 <- prepped_ngram$gram4 %>% select(preceding)
+gram_list$gram5 <- prepped_ngram$gram5 %>% select(preceding)
+  
+all_toks <- rbindlist(gram_list) %>% distinct()
+```
+
+```{r include=FALSE}
+rm(gram_list)
+```
+
+
+```{r Function preceding_top_5_speed, echo=FALSE}
+preceding_top_5_speed <- function(input_text, blank_df, prepped_dt){
+  score_modifiers <- c(1.0, 1.0, 1.0, 1.0, 1.0)
+  
+  input_tokens <- rev(unlist(strsplit(input_text, split=" "), use.names = FALSE))
+  n <- length(input_tokens)
+  
+  if(n==4){
+    temp <- prepped_dt$gram5[preceding == paste(input_tokens[4], input_tokens[3], input_tokens[2], input_tokens[1]), .(token, score5)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score5 <- temp$score5
+    
+    temp <- prepped_dt$gram4[preceding == paste(input_tokens[3], input_tokens[2], input_tokens[1]), .(token, score4)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score4 <- temp$score4
+    
+    temp <- prepped_dt$gram3[preceding == paste(input_tokens[2], input_tokens[1]), .(token, score3)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score3 <- temp$score3
+    
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  else if(n==3){
+    temp <- prepped_dt$gram4[preceding == paste(input_tokens[3], input_tokens[2], input_tokens[1]), .(token, score4)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score4 <- temp$score4
+    
+    temp <- prepped_dt$gram3[preceding == paste(input_tokens[2], input_tokens[1]), .(token, score3)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score3 <- temp$score3
+    
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  else if(n==2){
+    temp <- prepped_dt$gram3[preceding == paste(input_tokens[2], input_tokens[1]), .(token, score3)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score3 <- temp$score3
+    
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  else{
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  # No matches scenario. Just return the top results based solely on token count. (words like "the")
+  if(nrow(temp)==0){
+    input_text <- paste(rev(input_tokens), collapse=" ")
+    out_tokens <- as.character(prepped_dt$gram1$token[1:5])
+    out_scores <- prepped_dt$gram1$score1[1:5]
+    return (list(input_text, out_tokens, out_scores))
+  }
+  
+  # Modify scores based on frequency of the token in the entire document to give better meaning to outputs.
+  # Math: log(score_modifiers[1]) - log(prob) = log(score_modifiers[1]/prob) = log(score_modifiers[1]*(sum of all tokens)/(count of specific token))
+  blank_df <- blank_df[, .(token, adj_score = (log(score_modifiers[1]) - log(prob))*rowSums(.SD, na.rm = T)),.SDcols=3:7]
+  blank_df <- setorder(blank_df, -adj_score)
+  
+  # Output the token with its top choices and corresponding scores as a list
+  input_text <- paste(rev(input_tokens), collapse=" ")
+  out_tokens <- as.character(blank_df$token[1:5])
+  out_scores <- blank_df$adj_score[1:5]
+  return (list(input_text, out_tokens, out_scores))
+}
+```
+
+Now that all of the probabilities and conditional probabilities are prepard as we need in our list of dataframes, we can compute the top results given any input text. It would be straightforward to write a prediciotn algorithm at this point and be done, however, the speed would be atrocious and unusable for any real world applications (especially mobile applications). Therefore, for every unique *preceding* text amongst our dataframes we need to compute what the top results would be ahead of time and store these results ina lookup table. That is what the function **preceding_top_5_speed** does. 
+
+Due to the large number of computations required for this, we initialize a dataframe named *blank_df* outside of **preceding_top_5_speed**. Also we use as many cores as are available utilizing functions available to the *future.apply* and *parallel* packages.
+```{r include=TRUE, eval=FALSE}
+# Sort the gram1 output once so it is not done every time
+prepped_ngram$gram1 <- setorder(prepped_ngram$gram1, -score1)
+
+# Create a dataframe for all scores now to save time on merge later.
+blank_df <-data.table(prepped_ngram$prob, score1=prepped_ngram$prob$prob/100, score2=0, score3=0, score4=0, score5=0)
+
+# Enable parallel processing to drastically improve speed.
+plan(multiprocess, workers = detectCores()-1)
+
+# Get a list of list of a list
+i <- 0
+fast_list <- list()
+increment <- 40000
+start_time <- Sys.time()
+while(i*increment<length(all_toks$preceding)){
+  input_tokens <- as.character(all_toks$preceding[(1+increment*i):(increment*(i+1))])
+  # Get a list of list of a list
+  fast_list[[i+1]] <- future_lapply(input_tokens, preceding_top_5_speed, blank_df=blank_df, prepped_dt=prepped_ngram)
+
+  print(paste0("Increment: ", as.character(i), "  Time(s): ", as.character(Sys.time() - start_time)))
+  i <- i+1
+}
+```
+
+The entire loop above could be replaced with simply the following code:
+
+> fast_list <- future_lapply(input_tokens, preceding_top_5_speed, blank_df=blank_df, prepped_dt=prepped_ngram)
+
+However, the loop was incorporated to see the progress as this still takes several hours even utilizing multiprocessing capabilities.
+
+```{r include=FALSE, eval=FALSE}
+save(fast_list, file = "./data/fast_list.RData")
+```
+
+```{r include=FALSE, eval=FALSE}
+load("./data/fast_list.RData")
+```
+
+Our data is currently in a list of a list of a list, so we will want to unpack this into a sorted data.table and rename the columns.
+```{r include=TRUE, eval=FALSE}
+# Convert from list of list to datatable
+fast_dt <- do.call(c, fast_list)
+fast_dt <- as.data.table(matrix(unlist(fast_dt), nrow=length(unlist(fast_dt[1]))))
+fast_dt <- as.data.table(t(fast_dt))
+
+# Rename columns
+colnames(fast_dt) <- c("Preceding", "top1", "top2", "top3", "top4", "top5", "score1", "score2", "score3", "score4", "score5")
+
+# Set the key to improve the speed of sorting processes later
+setkey(fast_dt, Preceding)
+```
+
+```{r include=FALSE, eval=FALSE}
+save(fast_dt, file = "./data/fast_dt.RData")
+```
+
+```{r include=FALSE, eval=TRUE}
+load("./data/fast_dt.RData")
+```
+
+```{r echo=FALSE, eval=TRUE}
+# CLEANUP
+all <-ls()
+keep <- c("add_start", "remove_profanity", "split_and_clean", "text_delete", "text_fix", 
+          "unicode_fix", "profanity_words", "fast_dt")
+remove <- setdiff(all, keep)
+rm(list = remove)
+rm(remove)
+rm(all)
+rm(keep)
+```
+
+### Text Predictions Using Our Model
+
+We have now spent much effort preparing our results into a simple lookup table, so our prediction algorithm, **Predict_ngram_fast**, becomes very simple. All we need to do is clean the given input text in the same way we cleaned our training data (using the **split_and_clean** function) and look for the longest match in our table. If we are given a long string of text, we look at the most recent 4 tokens and then search our table for this 4-gram. If that 4-gram is not present in our table, we reduce our search to the corresponding 3-gram, and so on until the case of no input. If there is a match, we immediately stop and output the corresponding results. If there is no match, we will eventually arrive at the case of no input where we simply output the most common individual tokens. We can also provide a confidence score to our result based on how much higher of a score the individual token when compared to the other top 5 candidates.
+
+```{r Function Predict_ngram_fast, echo=FALSE}
+Predict_ngram_fast <- function(input_text, complete_dt, verbose=TRUE){
+  # If verbose is TRUE, output confidence
+  
+  # Apply cleaning function to input text. And reverses the texts order
+  cleaned_text <- split_and_clean(input_text)
+  cleaned_text <- unlist(strsplit(cleaned_text, split=" "), use.names = FALSE)
+  
+  matched_row <- data.frame()
+  n=4
+  while (nrow(matched_row)==0 && n>=1){
+    
+    preceding_text <- paste(tail(cleaned_text, n), collapse=" ") 
+    matched_row <- complete_dt[Preceding==preceding_text]
+    
+    n <- n-1
+  }
+  if(nrow(matched_row)==0){
+    matched_row <- complete_dt[Preceding=="<Null>"]
+  }
+
+  # Extract row info here
+  output <- data.frame("Top_Choices" = c(matched_row$top1, 
+                                         matched_row$top2, 
+                                         matched_row$top3, 
+                                         matched_row$top4, 
+                                         matched_row$top5), 
+                       "Scores" = as.numeric(c(matched_row$score1, 
+                                               matched_row$score2, 
+                                               matched_row$score3, 
+                                               matched_row$score4, 
+                                               matched_row$score5)))
+  if(verbose){
+    total <- output %>% mutate(sum_val = ifelse(Scores > 1.0, Scores, 1.0)) %>% select(sum_val) %>% sum()
+    output <- output %>% mutate(Confidence_Score = paste0(as.character(round(100*Scores/total, 2)), "%")) %>% select(Top_Choices, Confidence_Score)
+  }
+  return(output)
+}
+```
+
+<br>
+
+#### Text Predictions Using Our Model: Example
+
+Let us see the output of our completed model with the following example text:
+
+> The guy in front of me just bought a pound of bacon, a bouquet, and a case of
+
+```{r eval=FALSE}
+Example_Input <- "The guy in front of me just bought a pound of bacon, a bouquet, and a case of"
+prediction_output <- Predict_ngram_fast(Example_Input, fast_dt)
+```
+
+```{r include=FALSE, eval=FALSE}
+save(prediction_output, file = "./data/prediction_output.RData")
+```
+
+```{r echo=FALSE}
+load("./data/prediction_output.RData")
+```
+
+```{r echo=FALSE}
+kable(prediction_output, caption = "Model Prediction Example") %>%
+  kable_styling(full_width = F, position = "float_right") %>%
+  column_spec(1, width = "15em", border_right = T, background = "#C3C3B9") %>%
+  column_spec(2, width = "15em", background = "SkyBlue")
+```
+
+
+<br>
+<br>
+
+The model accurately provides *beer* as the most likely solution with a confidence of about 60%. We can also understand the other recommendations such as *the* and *emergency* since the phrases *a case of the* and *case of emergency* are fairly common as well.
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+#### Text Predictions Using Our Model: Performance
+
+Now that we have seen how our model handles a single example and had decent results, it is time to show how our model handles a large set of test data. For this reason we originally split our dataset a while back into a training set (with 70% of our data) and a testing set (with the remaining 30% of our data). Using the function **Prediciton_Evaluation** we can test the speed and performance of our model on randomly selected lines of our testing (or training) set.
+
+```{r Function Prediction_Evaluation, echo=FALSE}
+Prediction_Evaluation <- function(test_set, prediction_algorithm, lookup_table, num_predictions=10000){
+
+  # pick a lines from the testing set at random
+  rand_lines <- sample(raw_testing_sentences, num_predictions, replace=T)
+  # clean and split into separate sentences
+  cleaned_sentences <- split_and_clean(rand_lines)
+  # pick sentences at random
+  rand_sentences <- sample(cleaned_sentences, num_predictions, replace=T)
+  
+  results_df <- data.frame("Spot_1" = 0, "Spot_2" = 0,"Spot_3" = 0,"Spot_4" = 0,"Spot_5" = 0,"No_Match" = 0)
+  for (sentence in rand_sentences){
+    
+    # split the sentence into tokens
+    tokens <- unlist(strsplit(sentence, split=" "), use.names = FALSE)
+    # pick a token at random from the individual sentence
+    rand_int <- sample(1:length(tokens), 1)
+    input_text <- paste(tokens[1:(rand_int-1)], collapse = " ")
+    true_token <- tokens[rand_int]
+    predicted_tokens <- prediction_algorithm(input_text, lookup_table)
+    
+    # Compare Results and save into a data.frame
+    results_df[[match(true_token, predicted_tokens$Top_Choices, nomatch=6)]] <- results_df[[match(true_token, predicted_tokens$Top_Choices, nomatch=6)]]+1
+  }
+ 
+  # Accuracy Results
+  top5 <- paste0(as.character(signif(sum(results_df[1:5])*100/num_predictions), 4), "%")
+  top3 <- paste0(as.character(signif(sum(results_df[1:3])*100/num_predictions), 4), "%")
+  top1 <- paste0(as.character(signif(results_df[[1]]*100/num_predictions), 4), "%")
+  
+  # Speed Test
+  speed_test <- rbenchmark::benchmark(Predict_ngram_fast("1: a pound of bacon, a bouquet, and a case of", fast_dt),
+          replications = 1000,
+          columns = c("test", "replications", "elapsed"))
+  
+  # Speed Results
+  speed <- paste(as.character(round(1000*speed_test$elapsed/speed_test$replications, 4)), "msec per prediction")
+  
+  # Output Results
+  output_df <- data.frame("Top_1_Accuracy" = top1, "Top_3_Accuracy" = top3, "Top_5_Accuracy" = top5, "Prediction_Speed" = speed)
+  
+  return(output_df)
+}
+```
+
+```{r eval=FALSE, include=FALSE}
+load("./data/cleaned_training_sentences.RData")
+load("./data/raw_testing_sentences.RData")
+```
+
+```{r include=TRUE, eval=FALSE}
+testing_performance <- Prediction_Evaluation(raw_testing_sentences, 
+                                             Predict_ngram_fast, fast_dt, 
+                                             num_predictions=10000)
+training_performance <- Prediction_Evaluation(cleaned_training_sentences, 
+                                              Predict_ngram_fast, fast_dt, 
+                                              num_predictions=10000)
+```
+
+We would also like to see the memory used by our application, so we can check the memory of all data and functions required to use our prediciton algorithm:
+```{r eval=FALSE}
+memory_used <- object.size(Predict_ngram_fast) +
+  object.size(fast_dt) + 
+  object.size(profanity_words) + 
+  object.size(add_start) + 
+  object.size(remove_profanity) + 
+  object.size(split_and_clean) + 
+  object.size(text_delete) + 
+  object.size(text_fix) + 
+  object.size(unicode_fix)
+```
+
+We can combine our performance and memory data into one dataframe and output the results below:
+```{r include=TRUE, eval=FALSE}
+memory_used <- round(as.numeric(memory_used)/1000000, 2)
+
+testing_performance <- data.frame(testing_performance, 
+                                  "Memory_Usage_in_Mb" = as.character(memory_used))
+training_performance <- data.frame(training_performance, 
+                                   "Memory_Usage_in_Mb" = as.character(memory_used))
+
+combined_performance <- data.frame("Dataset" = c("In Sample Data", "Out-of-Sample Data"), 
+                                   rbind(training_performance, testing_performance))
+```
+
+```{r include=FALSE, eval=FALSE}
+save(combined_performance, file = "./data/combined_performance.RData")
+```
+
+```{r include=FALSE, eval=TRUE}
+load(file = "./data/combined_performance.RData")
+```
+
+```{r Model Performance, echo=FALSE}
+kable(combined_performance, caption = "Model Performance") %>%
+kable_styling(full_width = F, position = "float_right") %>%
+column_spec(1, width = "70em", background = "#C3C3B9", bold = T, border_right = T) %>%
+column_spec(2, width = "20em", background = "SkyBlue", border_right = T) %>%
+column_spec(3, width = "20em", background = "#C3C3B9", border_right = T) %>%
+column_spec(4, width = "20em", background = "SkyBlue", border_right = T) %>%
+column_spec(5, width = "20em", background = "#C3C3B9", border_right = T) %>%
+column_spec(6, width = "20em", background = "SkyBlue")
+```
+
+Our model's accuracy is fairly good with a perfect top result about 12% of the time and the correct result being in our top 5 roughly 25% of the time. The best feature of our model is our fast prediciton speed of about 18msec. This time is almost entirely spent clenaing the input text, and could be hevaily reduced by simplifying our text cleaning process. The worst feature of our model is the memory usage which is about 600Mb. This is a bit heavy for mobile applications though it would still be functional. Before using this on mobile applications, further cleaning/reducing could be performed on our dataset in the form of comparing tokens with a dictionary or requiring all tokens to exist more than 2 times.
+
+We can see that our in-sample and out-of-sample results are extremely similar. This is likely due to the large amount of data used in our training set. Had we only used something like 5% of our dataset as training data, we could expect larger discrepancies between training and testing.
+
+<br>
+<br>
+
+### Appendix: Functions
+
+All of the functions used in the project are kept below to reduce the amount of R code in the main report.
+```{r echo=TRUE, eval=FALSE}
+unicode_fix <- function(txt){
+        output_txt <- gsub('[”“\u2033]', '"', txt, perl=TRUE)
+        output_txt <- gsub('[\u2018\u2019\u2032\u00B4\u0092]', "'", output_txt, perl=TRUE)
+        output_txt <- gsub('[—–]', "-", output_txt, perl=TRUE)
+        output_txt <- gsub('…', "...", output_txt, perl=TRUE)
+        output_txt <- gsub('：', ":", output_txt, perl=TRUE)
+        
+        output_txt <- gsub('[\u01CE\u00E0äàáã\u00E2\u0101\u0430]', "a", output_txt, perl=TRUE)
+        output_txt <- gsub('[ç\u010D]', "c", output_txt, perl=TRUE)
+        output_txt <- gsub('[êéè]', "e", output_txt, perl=TRUE)
+        output_txt <- gsub('[í\u00ED\u012B\u1ECB]', "i", output_txt, perl=TRUE)
+        output_txt <- gsub('[ñ\u1E47]', "n", output_txt, perl=TRUE)
+        output_txt <- gsub('[ốôờøó\u01A1\u00F6\u1EDB\u1ED9\u00F0]', "o", output_txt, perl=TRUE)
+        output_txt <- gsub('[\u1E5B]', "r", output_txt, perl=TRUE)
+        output_txt <- gsub('[\u015A\u1E63\u015B]', "s", output_txt, perl=TRUE)
+        output_txt <- gsub('[üú\u01B0\u016B]', "u", output_txt, perl=TRUE)
+        
+        output_txt <- gsub('¼', "a quarter", output_txt, perl=TRUE)
+        output_txt <- gsub('½', "a half", output_txt, perl=TRUE)
+        output_txt <- gsub('⅛', "an eighth", output_txt, perl=TRUE)
+        output_txt <- gsub('⅔', "two thirds", output_txt, perl=TRUE)
+        
+        return(output_txt)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+text_fix <- function(txt){
+    cleaned_text <- gsub("^RT[^a-zA-Z]", "retweet ", txt, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))[sS]/[Oo](?=( |$))", " shoutout ", cleaned_text, perl=TRUE)      
+    
+    cleaned_text <- textclean::replace_contraction(cleaned_text) %>% char_tolower()
+    cleaned_text <- textclean::replace_word_elongation(cleaned_text)
+    cleaned_text <- gsub("where'd", " where did ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("haven't", " have not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("hadn't", " had not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("there'd", " there would ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("y'all", " you all ", cleaned_text, perl=TRUE)
+    
+    cleaned_text <- replace_ordinal(cleaned_text)
+    cleaned_text <- gsub("((?<=^)|(?<= ))0(?=( |$))", " zero ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))1(?=( |$))", " one ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))2(?=( |$))", " two ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))3(?=( |$))", " three ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))4(?=( |$))", " four ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))5(?=( |$))", " five ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))6(?=( |$))", " six ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))7(?=( |$))", " seven ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))8(?=( |$))", " eight ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))9(?=( |$))", " nine ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))10(?=( |$))", " ten ", cleaned_text, perl=TRUE)
+    ## Fix possessive. Must come after the contraction fix
+    cleaned_text <- gsub("([a-z])'s([^a-z])", "\\1\\2", cleaned_text, perl=TRUE)
+
+    # Specific Common fixes
+    cleaned_text <- gsub("((?<=^)|(?<= ))fwd(?=( |$))", " forward ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))t-shirt", " tshirt", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))a.m.(?=( |$))", " am ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))p.m.(?=( |$))", " pm ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))ff(?=( |$))", " forfeit ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))tho(?=( |$))", " though ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))dm(?=( |$))", " direct message ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))b/c(?=( |$))", " because ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))im(?=( |$))", " i am ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))rt(?=( |$))", " right ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))u(?=( |$))", " you ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))r(?=( |$))", " are ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))w(?=( |$))", " with ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))k(?=( |$))", " okay ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))yea(?=( |$))", " yeah ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))dont(?=( |$))", " do not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))cant(?=( |$))", " can not ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))u.s.(a.?)?(?=( |$))", " united states ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))the u.?s.?(a.?)?(?=( |$))", " the united states ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))wanna(?=( |$))", " want to ", cleaned_text, perl=TRUE)
+    cleaned_text <- gsub("((?<=^)|(?<= ))gonna(?=( |$))", " going to ", cleaned_text, perl=TRUE)
+    
+    return(cleaned_text)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+text_delete <- function(txt){
+        # Remove URLS
+        output_text <- gsub("((?<=^)|(?<= ))\\S*(www|\\.com)\\S*(?=( |$))", " <del> ", txt, perl=TRUE)
+        # Remove sentence ending punctuation
+        output_text <- gsub("[[:punct:]]+\\s*$", " ", output_text, perl=TRUE)
+        # Remove punctuation and digits
+        output_text <- gsub("(\\S*)[[:punct:]]+(?= )", "\\1", output_text, perl=TRUE)
+        output_text <- gsub("((?<=^)|(?<= ))\\S*([[:punct:]]+|[0-9]+)\\S*(?=( |$))", " <del> ", output_text, perl=TRUE)
+        # Delete remaining ASCII characters
+        output_text <- gsub('((?<=^)|(?<= ))\\S*[^\x20-\x7E]+\\S*(?=( |$))', ' <del> ', output_text, perl=TRUE)
+        # Delete certain individual letters or cases of 're'
+        output_text <- gsub('((?<=^)|(?<= ))(re|[bcdefghjklmnopqrstvwxyz])(?=( |$))', ' <del> ', output_text, perl=TRUE)
+
+        output_text <- gsub('<del>( +<del>)+', '<del>', output_text, perl=TRUE)
+        
+        return(output_text)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+add_start <- function(lines){
+        paste0("<start> ", lines)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+remove_profanity <- function(txt){
+        # Remove words in the profanity list
+        output_text <- gsub(paste0('((?<=^)|(?<= ))(', profanity_words, ')()(?=( |$))'), ' <del> ', txt, perl=TRUE)
+        
+        return(output_text)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+split_and_clean <- function(text){
+        
+        output_text <- text %>% 
+                corpus() %>%
+                corpus_reshape(to = "sentences") %>%
+                tolower() %>% 
+                unicode_fix() %>%
+                text_fix() %>%
+                text_delete() %>%
+                add_start() %>%
+                remove_profanity()
+        
+        return(output_text)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+train_test_split <- function(total_text, train_split=0.7, number_of_lines=FALSE, seed=FALSE){
+  #----Inputs----
+  # total_text is designed to be the entire raw set of text
+  # train_split dictates the training/testing split. 0.7 (default) indicates that 70% of the text is used for trainign and 30% is used for testing.
+  # number_of_lines indicates the number of lines from total_tetx to use. If left at FALSE, all of the lines in total_text are used. 
+      # This was mainly used during development to use smaller sets of text.
+  # seed is optional for repeatable results. If left empty then it is random.
+  
+  #----Outputs----
+  # list where the first entry is the training set and the second entry is the testing set
+  
+  if (seed != FALSE){
+    set.seed(seed)
+  }
+  if (number_of_lines > length(total_text) || number_of_lines == FALSE){
+    number_of_lines=length(total_text)
+  }
+  line_numbers <- sample(1:length(total_text), number_of_lines, replace=F)
+  train_limit <- floor(number_of_lines*train_split)
+  train_text <- total_text[line_numbers[1:train_limit]]
+  test_text <- total_text[line_numbers[-c(1:train_limit)]]
+
+  return(list(train_text, test_text))
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+merge_token_tables <- function(dt1, dt2){
+        
+        output_dt <- data.table(merge(dt1, dt2, by=c("feature"), all=TRUE)) %>%
+                replace(is.na(.), 0) %>%
+                mutate(frequency = frequency.x + frequency.y) %>%
+                select(feature, frequency)
+        
+        return(output_dt)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+split_tokens <- function(dt){
+  output_dt <- list()
+        
+  output_dt$gram1 <- subset(dt, grepl('^[^_]*$', feature))
+  colnames(output_dt$gram1) <- c("token", "frequency")
+  output_dt$gram1 <- setorder(output_dt$gram1, -frequency)
+        
+  output_dt$gram2 <- subset(dt, grepl('^[^_]*(_[^_]*){1}$', feature))
+  colnames(output_dt$gram2) <- c("token", "frequency")
+  output_dt$gram2 <- setorder(output_dt$gram2, -frequency)
+  
+  output_dt$gram3 <- subset(dt, grepl('^[^_]*(_[^_]*){2}$', feature))
+  colnames(output_dt$gram3) <- c("token", "frequency")
+  output_dt$gram3 <- setorder(output_dt$gram3, -frequency)
+  
+  output_dt$gram4 <- subset(dt, grepl('^[^_]*(_[^_]*){3}$', feature))
+  colnames(output_dt$gram4) <- c("token", "frequency")
+  output_dt$gram4 <- setorder(output_dt$gram4, -frequency)
+  
+  output_dt$gram5 <- subset(dt, grepl('^[^_]*(_[^_]*){4}$', feature))
+  colnames(output_dt$gram5) <- c("token", "frequency")
+  output_dt$gram5 <- setorder(output_dt$gram5, -frequency)
+  
+  return(output_dt)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+basic_stats_table <- function(ngram_df){
+  
+  stats_tbl <- data.frame(Basic_Stats = c("Unique Tokens", "Total Tokens", "Top 5 Token Coverage", "Unique Tokens for 50% Coverage",
+                                       "Unique Tokens for 75% Coverage", "Unique Tokens for 90% Coverage", "Unique Tokens for 99% Coverage" ))
+  
+  for (i in 1:5){      
+    reduced_ngram_df <- ngram_df[[paste0("gram", as.character(i))]]
+    
+    # Need to sort by frequency first (for running totals)
+    reduced_ngram_df <- setorder(reduced_ngram_df, -frequency)
+    
+    # Unique tokens
+    num_unique_tokens <- nrow(reduced_ngram_df)
+    
+    # Number of Total
+    num_total_tokens <- sum(reduced_ngram_df$frequency)
+    
+    # Running Total and Cumulative Totals
+    reduced_ngram_df[,"freq_running"] <- cumsum(reduced_ngram_df$frequency)
+    reduced_ngram_df <- reduced_ngram_df %>% mutate(running_percent = freq_running/num_total_tokens)
+    
+    # Put it all together
+    stats_tbl[[paste0(as.character(i), "-gram")]] <- c(num_unique_tokens, num_total_tokens, 
+                                                       paste0(as.character(round(100*reduced_ngram_df$running_percent[5], 2)), "%"),
+                                                       which(reduced_ngram_df$running_percent >= 0.50)[1],
+                                                       which(reduced_ngram_df$running_percent >= 0.75)[1],
+                                                       which(reduced_ngram_df$running_percent >= 0.90)[1],
+                                                       which(reduced_ngram_df$running_percent >= 0.99)[1])
+  }
+  
+  return(stats_tbl)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+plot_top_ngrams <- function(split_ngram){
+  
+  p <- list()
+  for (ngram_num in 1:5){
+        reduced_df <- split_ngram[[paste0("gram", as.character(ngram_num))]]
+
+        p[[as.character(ngram_num)]] <- ggplot(reduced_df[1:10,],
+                    mapping=aes(x= reorder(token, -frequency),
+                                y = frequency, fill=frequency)) +
+                geom_bar(stat="identity") +
+                xlab("N-Grams") +
+                ylab("Frequency") +
+                ggtitle(paste0("Frequency of Top 10 ", as.character(ngram_num), "-Grams")) +
+                theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        
+        # Fix scientific notation being displayed
+        opt <- options("scipen" = 20)
+  }  
+  
+  return(p)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+ngram_frequency <- function(split_ngram){
+  
+  p <- list()
+  for (ngram_num in 1:5){
+        reduced_df <- split_ngram[[paste0("gram", as.character(ngram_num))]]
+        
+        freq_counts_df <- data.frame(table(reduced_df$frequency))
+        freq_counts_df <- setorder(freq_counts_df, -Freq)
+        colnames(freq_counts_df) <- c("Frequency", "freq_counts")
+        # browser()
+        p[[as.character(ngram_num)]] <- ggplot(freq_counts_df[1:10,],
+                    mapping=aes(x= reorder(Frequency, -freq_counts),
+                                y = freq_counts, fill=freq_counts)) +
+                geom_bar(stat="identity") +
+                xlab("Frequency") +
+                ylab("Number of N-Grams") +
+                ggtitle(paste0("Frequency of ", as.character(ngram_num), "-Gram Counts")) +
+                theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        
+        # Fix scientific notation being displayed
+        opt <- options("scipen" = 20)
+  }  
+  
+  return(p)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+split_token_dt <- function(dt){
+  output_dt <- list()
+        
+  output_dt$gram1 <- subset(dt, grepl('^[^_]*$', feature))
+  colnames(output_dt$gram1) <- c("token", "frequency")
+        
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){1}$', feature))
+  output_dt$gram2 <- cbind(temp$frequency, colsplit(temp$feature, "_", c("token_1_before", "token")))
+  colnames(output_dt$gram2) <- c("frequency", "token_1_before", "token")
+
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){2}$', feature))
+  output_dt$gram3 <- cbind(temp$frequency, colsplit(temp$feature, "_", c("token_2_before", "token_1_before", "token")))
+  colnames(output_dt$gram3) <- c("frequency", "token_2_before", "token_1_before", "token")
+
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){3}$', feature))
+  output_dt$gram4 <- cbind(temp$frequency, colsplit(temp$feature, "_", c("token_3_before", "token_2_before", "token_1_before", "token")))
+  colnames(output_dt$gram4) <- c("frequency", "token_3_before", "token_2_before", "token_1_before", "token")
+
+  temp <- subset(dt, grepl('^[^_]*(_[^_]*){4}$', feature))
+  output_dt$gram5 <- cbind(temp$frequency, colsplit(temp$feature, "_", 
+                                                              c("token_4_before", "token_3_before", "token_2_before", "token_1_before", "token")))
+  colnames(output_dt$gram5) <- c("frequency", "token_4_before", "token_3_before", "token_2_before", "token_1_before", "token")
+        
+  return(output_dt)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+compress_token_dt <- function(dt){
+  
+  gram_list <- list()
+
+  # modify gram1
+  gram_list$gram1 <- dt$gram1 %>% setorder(-frequency)
+  # modify gram2
+  gram_list$gram2 <- dt$gram2 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  # modify gram3
+  gram_list$gram3 <- dt$gram3 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_2_before, token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  # modify gram4
+  gram_list$gram4 <- dt$gram4 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_3_before, token_2_before, token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  # modify gram5
+  gram_list$gram5 <- dt$gram5 %>% dplyr::rename(token_temp = "token") %>% 
+    mutate(token = paste(token_4_before, token_3_before, token_2_before, token_1_before, token_temp)) %>% select(token, frequency) %>% 
+    setorder(-frequency)
+  
+  return(gram_list)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+split_preceding_tokens <- function(dt){
+  
+  gram_list <- list()
+
+  # modify gram1
+  gram_list$gram1 <- data.table(dt$gram1, preceding ="")
+  
+  # modify gram2
+  gram_list$gram2 <- cbind(dt$gram2$frequency, colsplit(dt$gram2$token, " ", c("preceding", "token")))
+  colnames(gram_list$gram2) <- c("frequency", "preceding", "token")
+  gram_list$gram2 <- gram_list$gram2 %>% setcolorder(c("token", "frequency", "preceding"))
+  
+  # modify gram3
+  gram_list$gram3 <- cbind(dt$gram3$frequency, colsplit(dt$gram3$token, " ", c("token_2_before", "token_1_before", "token")))
+  gram_list$gram3$preceding <- paste(gram_list$gram3$token_2_before, gram_list$gram3$token_1_before)
+  colnames(gram_list$gram3) <- c("frequency", "token_2_before", "token_1_before", "token", "preceding")
+  gram_list$gram3 <- gram_list$gram3 %>% select(token, frequency, preceding)
+
+  # modify gram4
+  gram_list$gram4 <- cbind(dt$gram4$frequency, colsplit(dt$gram4$token, " ",
+                                                        c("token_3_before", "token_2_before", "token_1_before", "token")))
+  gram_list$gram4$preceding <- paste(gram_list$gram4$token_3_before, gram_list$gram4$token_2_before, 
+                                     gram_list$gram4$token_1_before)
+  colnames(gram_list$gram4) <- c("frequency", "token_3_before", "token_2_before", "token_1_before", "token", "preceding")
+  gram_list$gram4 <- gram_list$gram4 %>% select(token, frequency, preceding)
+
+  # modify gram5
+  gram_list$gram5 <- cbind(dt$gram5$frequency, colsplit(dt$gram5$token, " ",
+                                                        c("token_4_before", "token_3_before", "token_2_before", "token_1_before", "token")))
+  gram_list$gram5$preceding <- paste(gram_list$gram5$token_4_before, gram_list$gram5$token_3_before, 
+                                     gram_list$gram5$token_2_before, gram_list$gram5$token_1_before)
+  colnames(gram_list$gram5) <- c("frequency", "token_4_before", "token_3_before", "token_2_before", "token_1_before", "token", "preceding")
+  gram_list$gram5 <- gram_list$gram5 %>% select(token, frequency, preceding)
+  
+  return(gram_list)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+# Takes in a list of 5 token dataframes and outputs 5 score data.tables and a probability table
+prep_dt_list <- function(dt, reduce_num = 5, score_mod = c(1.0, 1.0, 1.0, 1.0, 1.0)){
+  # returns 6 datatables in a list and sorts each of them by the column "preceding":
+  # $dt$prob - probability of each token = (token count)/(sum of all token counts)
+  # in the following comments the number 5 is controlled by the parameter "reduce_num"
+  # dt$gram1 - score for the top 5 individual tokens (words like "the" that appear extremely frequently.)
+  # dt$gram2 - bigrams:  For any given preceding text, keep the top 5 most likely tokens and save their scores.
+  # dt$gram3 - trigrams: For any given preceding text, keep the top 5 most likely tokens and save their scores.
+  # dt$gram4 - 4-grams:  For any given preceding text, keep the top 5 most likely tokens and save their scores.
+  # dt$gram5 - 5-grams:  For any given preceding text, keep the top 5 most likely tokens and save their scores.
+
+  dt$prob <- as.data.table(dt$gram1)
+  dt$prob <- dt$prob[, .(token, prob = frequency/sum(frequency))]
+  setkey(dt$prob, token)
+  
+  dt$gram1 <- as.data.table(dt$gram1)
+  dt$gram1 <- dt$gram1[, .(token, score1 = score_mod[1]*frequency/sum(frequency))]
+  dt$gram1 <- setorder(dt$gram1, -score1)[1:reduce_num]
+  dt$gram1 <- na.omit(dt$gram1)
+  
+  dt$gram2 <- as.data.table(dt$gram2)
+  dt$gram2 <- dt$gram2[,.(token, score2 = score_mod[2]*frequency/sum(frequency)), by=preceding]
+  dt$gram2 <- setorder(setDT(dt$gram2), -score2)[, head(.SD, reduce_num), keyby = preceding]
+  
+  dt$gram3 <- as.data.table(dt$gram3)
+  dt$gram3 <- dt$gram3[,.(token, score3 = score_mod[3]*frequency/sum(frequency)), by=preceding]
+  dt$gram3 <- setorder(setDT(dt$gram3), -score3)[, head(.SD, reduce_num), keyby = preceding]
+  
+  dt$gram4 <- as.data.table(dt$gram4)
+  dt$gram4 <- dt$gram4[,.(token, score4 = score_mod[4]*frequency/sum(frequency)), by=preceding]
+  dt$gram4 <- setorder(setDT(dt$gram4), -score4)[, head(.SD, reduce_num), keyby = preceding]
+  
+  dt$gram5 <- as.data.table(dt$gram5)
+  dt$gram5 <- dt$gram5[,.(token, score5 = score_mod[5]*frequency/sum(frequency)), by=preceding]
+  dt$gram5 <- setorder(setDT(dt$gram5), -score5)[, head(.SD, reduce_num), keyby = preceding]
+  
+  return(dt)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+preceding_top_5_speed <- function(input_text, blank_df, prepped_dt){
+  score_modifiers <- c(1.0, 1.0, 1.0, 1.0, 1.0)
+  
+  input_tokens <- rev(unlist(strsplit(input_text, split=" "), use.names = FALSE))
+  n <- length(input_tokens)
+  
+  if(n==4){
+    temp <- prepped_dt$gram5[preceding == paste(input_tokens[4], input_tokens[3], input_tokens[2], input_tokens[1]), .(token, score5)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score5 <- temp$score5
+    
+    temp <- prepped_dt$gram4[preceding == paste(input_tokens[3], input_tokens[2], input_tokens[1]), .(token, score4)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score4 <- temp$score4
+    
+    temp <- prepped_dt$gram3[preceding == paste(input_tokens[2], input_tokens[1]), .(token, score3)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score3 <- temp$score3
+    
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  else if(n==3){
+    temp <- prepped_dt$gram4[preceding == paste(input_tokens[3], input_tokens[2], input_tokens[1]), .(token, score4)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score4 <- temp$score4
+    
+    temp <- prepped_dt$gram3[preceding == paste(input_tokens[2], input_tokens[1]), .(token, score3)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score3 <- temp$score3
+    
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  else if(n==2){
+    temp <- prepped_dt$gram3[preceding == paste(input_tokens[2], input_tokens[1]), .(token, score3)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score3 <- temp$score3
+    
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  else{
+    temp <- prepped_dt$gram2[preceding == paste(input_tokens[1]), .(token, score2)]
+    blank_df[match(temp$token, blank_df$token, nomatch = 0, incomparables = NULL)]$score2 <- temp$score2
+  }
+  # No matches scenario. Just return the top results based solely on token count. (words like "the")
+  if(nrow(temp)==0){
+    input_text <- paste(rev(input_tokens), collapse=" ")
+    out_tokens <- as.character(prepped_dt$gram1$token[1:5])
+    out_scores <- prepped_dt$gram1$score1[1:5]
+    return (list(input_text, out_tokens, out_scores))
+  }
+  
+  # Modify scores based on frequency of the token in the entire document to give better meaning to outputs.
+  # Math: log(score_modifiers[1]) - log(prob) = log(score_modifiers[1]/prob) = log(score_modifiers[1]*(sum of all tokens)/(count of specific token))
+  blank_df <- blank_df[, .(token, adj_score = (log(score_modifiers[1]) - log(prob))*rowSums(.SD, na.rm = T)),.SDcols=3:7]
+  blank_df <- setorder(blank_df, -adj_score)
+  
+  # Output the token with its top choices and corresponding scores as a list
+  input_text <- paste(rev(input_tokens), collapse=" ")
+  out_tokens <- as.character(blank_df$token[1:5])
+  out_scores <- blank_df$adj_score[1:5]
+  return (list(input_text, out_tokens, out_scores))
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+Predict_ngram_fast <- function(input_text, complete_dt, verbose=TRUE){
+  # If verbose is TRUE, output confidence
+  
+  # Apply cleaning function to input text. And reverses the texts order
+  cleaned_text <- split_and_clean(input_text)
+  cleaned_text <- unlist(strsplit(cleaned_text, split=" "), use.names = FALSE)
+  
+  matched_row <- data.frame()
+  n=4
+  while (nrow(matched_row)==0 && n>=1){
+    
+    preceding_text <- paste(tail(cleaned_text, n), collapse=" ") 
+    matched_row <- complete_dt[Preceding==preceding_text]
+    
+    n <- n-1
+  }
+  if(nrow(matched_row)==0){
+    matched_row <- complete_dt[Preceding=="<Null>"]
+  }
+
+  # Extract row info here
+  output <- data.frame("Top_Choices" = c(matched_row$top1, 
+                                         matched_row$top2, 
+                                         matched_row$top3, 
+                                         matched_row$top4, 
+                                         matched_row$top5), 
+                       "Scores" = as.numeric(c(matched_row$score1, 
+                                               matched_row$score2, 
+                                               matched_row$score3, 
+                                               matched_row$score4, 
+                                               matched_row$score5)))
+  if(verbose){
+    total <- output %>% mutate(sum_val = ifelse(Scores > 1.0, Scores, 1.0)) %>% select(sum_val) %>% sum()
+    output <- output %>% mutate(Confidence_Score = paste0(as.character(round(100*Scores/total, 2)), "%")) %>% select(Top_Choices, Confidence_Score)
+  }
+  return(output)
+}
+```
+
+```{r echo=TRUE, eval=FALSE}
+Prediction_Evaluation <- function(test_set, prediction_algorithm, lookup_table, num_predictions=10000){
+
+  # pick a lines from the testing set at random
+  rand_lines <- sample(raw_testing_sentences, num_predictions, replace=T)
+  # clean and split into separate sentences
+  cleaned_sentences <- split_and_clean(rand_lines)
+  # pick sentences at random
+  rand_sentences <- sample(cleaned_sentences, num_predictions, replace=T)
+  
+  results_df <- data.frame("Spot_1" = 0, "Spot_2" = 0,"Spot_3" = 0,"Spot_4" = 0,"Spot_5" = 0,"No_Match" = 0)
+  for (sentence in rand_sentences){
+    
+    # split the sentence into tokens
+    tokens <- unlist(strsplit(sentence, split=" "), use.names = FALSE)
+    # pick a token at random from the individual sentence
+    rand_int <- sample(1:length(tokens), 1)
+    input_text <- paste(tokens[1:(rand_int-1)], collapse = " ")
+    true_token <- tokens[rand_int]
+    predicted_tokens <- prediction_algorithm(input_text, lookup_table)
+    
+    # Compare Results and save into a data.frame
+    results_df[[match(true_token, predicted_tokens$Top_Choices, nomatch=6)]] <- results_df[[match(true_token, predicted_tokens$Top_Choices, nomatch=6)]]+1
+  }
+ 
+  # Accuracy Results
+  top5 <- paste0(as.character(signif(sum(results_df[1:5])*100/num_predictions), 4), "%")
+  top3 <- paste0(as.character(signif(sum(results_df[1:3])*100/num_predictions), 4), "%")
+  top1 <- paste0(as.character(signif(results_df[[1]]*100/num_predictions), 4), "%")
+  
+  # Speed Test
+  speed_test <- rbenchmark::benchmark(Predict_ngram_fast("1: a pound of bacon, a bouquet, and a case of", fast_dt),
+          replications = 1000,
+          columns = c("test", "replications", "elapsed"))
+  
+  # Speed Results
+  speed <- paste(as.character(round(1000*speed_test$elapsed/speed_test$replications, 4)), "msec per prediction")
+  
+  # Output Results
+  output_df <- data.frame("Top_1_Accuracy" = top1, "Top_3_Accuracy" = top3, "Top_5_Accuracy" = top5, "Prediction_Speed" = speed)
+  
+  return(output_df)
+}
+```
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>

@@ -1,0 +1,159 @@
+Text Predict-R
+========================================================
+author: Charles Bryan
+date: 6/19/2020
+height: 1075
+width: 2000
+font-family: 'Times New Roman'
+
+
+Introduction
+========================================================
+
+Our application <span style="font-size:42px; color:red">Text Predict-R</span> is designed to predict the subsequent word given some input text. Similar functionality is currently utilized by applications for phone messaging as well as document writing such as Microsoft Word. What sets <span style="font-size:42px; color:red">Text Predict-R</span> apart from the existing methods is our approach uses a modified Katz's back-off model trained on n-grams derived from a large varied input corpus provided by [Coursera](https://www.coursera.org/learn/data-science-project/supplement/idhGA/syllabus).
+
+<br>
+
+The provided dataset for this project consisted of almost 600 Mb of text data taken from blogs, news, and twitter. Further statistics on this data can be seen in the table below:
+
+```{r echo=FALSE}
+require(data.table)
+require(knitr)
+require(kableExtra)
+require(tidyverse)
+
+review_dt <- as.data.table(read.csv(file = './data/review_dt.csv', stringsAsFactors=FALSE))
+
+review_dt %>% select(File:File_Size_in_Mb) %>% kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE) %>%
+  row_spec(0, background = "#e6e6e6", font_size = 34) %>%
+  column_spec(1, width = "30em", bold = T, border_right = T, background = "#C3C3B9") %>%
+  column_spec(2, width = "30em", border_right = T, background = "SkyBlue") %>%
+  column_spec(3, width = "30em", border_right = T, background = "#C3C3B9") %>%
+  column_spec(4, width = "30em", border_right = T, background = "SkyBlue") %>%
+  column_spec(5, width = "30em", border_right = T, background = "#C3C3B9")
+```
+
+
+Cleaning the Corpus
+========================================================
+
+Before we can work with the n-gram counts we first need to clean all of our training data. 
+
+- We split the text data into 70% training and 30% testing. 
+- Then we perform an excessive amount of cleaning (as shown below) for our training set. 
+
+<ol style="font-size:30px; LINE-HEIGHT:30px; color:#737373">
+  <li>Split text into sentences</li>
+  <li>Lower case all text <span style="color:blue">Ex. CaMeLs -> camels</span></li>
+  <li>Replace Unicode issues</li>
+  <li>Replace common twitter notation <span style="color:blue">Ex. RT -> retweet</span></li>
+  <li>Replace contractions with their elongated form <span style="color:blue">Ex. won't -> will not</span></li>
+  <li>Replace character elongation <span style="color:blue">Ex. whyyyyyyy -> why</span></li>
+  <li>Replace ordinal numbers <span style="color:blue">Ex. 1st -> first</span></li>
+  <li>Replace the numbers 0 through 10 with word equivalent <span style="color:blue">Ex. 0 -> zero</span></li>
+  <li>Remove possessive 's <span style="color:blue">Ex. child's -> child</span></li>
+  <li>Fix specific common issues</li>
+  <li>Remove urls</li>
+  <li>Remove remaining punctuation and numbers</li>
+  <li>Remove any remaining non ASCII characters</li>
+  <li>Remove common ambiguous characters <span style="color:blue">Ex. letters like d or m</span></li>
+  <li>Add a token to the start of each sentence</li>
+  <li>Remove profanity</li>
+</ol>
+
+***
+<p style="font-size:30px; LINE-HEIGHT:2px">
+<b>Raw text data before and after the application's lengthy cleaning process:</b>
+</p>
+```{r echo = FALSE}
+cleaned_text_tbl <- as.data.table(read.csv(file = './data/cleaned_text_tbl.csv', stringsAsFactors=FALSE))
+
+cleaned_text_tbl %>% select(Lines:Cleaned_Text) %>% kable() %>%
+                kable_styling(full_width = F) %>%
+                row_spec(0, background = "#e6e6e6", font_size = 34) %>%
+                column_spec(1, width = "5em", bold = T, border_right = T, background = "#C3C3B9") %>%
+                column_spec(2, width = "30em", background = "SkyBlue") %>%
+                column_spec(3, width = "30em", background = "#1AD167")
+```
+
+
+N-Gram Dataframes
+========================================================
+
+- After cleaning all of our text, we convert our text into dataframes of n-grams of size 1 through 5. 
+- We then reduce our n-grams by removing any n-grams that occur only once. This reduces our total unique n-grams by more than 50%!  
+- Next we split the data based on the length of the n-gram and calculate some basic statistics on these dataframes.
+
+<br>
+
+```{r echo=FALSE}
+basic_stats_df_reduced <- as.data.table(read.csv(file = './data/basic_stats_df_reduced.csv', stringsAsFactors=FALSE))
+
+basic_stats_df_reduced%>% dplyr::rename(one_gram = X1.gram, two_gram = X2.gram, three_gram = X3.gram, 
+                       four_gram = X4.gram, five_gram = X5.gram) %>%
+                select(Basic_Stats:five_gram) %>% kable() %>%
+                kable_styling(full_width = F) %>%
+                row_spec(0, background = "#e6e6e6", font_size = 34) %>%
+                column_spec(1, width = "25em", bold = T, border_right = T, background = "#C3C3B9") %>%
+                column_spec(2, width = "30em", background = "SkyBlue") %>%
+                column_spec(3, width = "30em", background = "#C3C3B9")%>%
+                column_spec(4, width = "30em", background = "SkyBlue") %>%
+                column_spec(5, width = "30em", background = "#C3C3B9")%>%
+                column_spec(6, width = "30em", background = "SkyBlue")
+```
+
+Algorithm Implementation
+========================================================
+
+The main algorithm of our applicatin is assigning a score to each token based on the preceding words. We only saved n-grams of length 1 through 5, so we only use up to the four preceding words to make a prediction. For an input text of 4 words (or more) the following steps are taken:
+
+<ol style="font-size:28px; LINE-HEIGHT:28px; color:#737373">
+  <li>Every potential token is assigned a score (score4) that is simply the probability of the token appearing on the condition of the preceding <b>4</b> words first appearing. <span style="color:blue">This conditional probability will sum to 1 across all tokens.</span></li>
+  <li>Every potential token is assigned a score (score3) that is simply the probability of the token appearing on the condition of the preceding <b>3</b> words first appearing.</li>
+  <li>Every potential token is assigned a score (score2) that is simply the probability of the token appearing on the condition of the preceding <b>2</b> words first appearing.</li>
+  <li>Every potential token is assigned a score (score1) that is simply the probability of the token appearing on the condition of the preceding <b>1</b> word first appearing.</li>
+  <li>Every token is assigned a score (score0) that is simply the probability of the token appearing not based on any preceding text.</li>
+  <li>For each token, all of its scores are summed together.</li>
+  <li>Each token's summed score is multiplied by log(1/score0). <span style="color:blue">This step discourages extremely frequent words such as <i>the</i> or <i>a</i> and instead results in meaningful results.</span></li>
+  <li>The top 5 results are then kept.</li>
+</ol>
+
+A crucial feature of this application's implementation is that these steps outlined above are performed for all combinations of input text (as seen by the training corpus) prior to deployment, and the results (top 5 tokens and scores) are stored in a lookup table.
+
+At the time a user types in words, the following steps are instantly performed:
+
+<ol style="font-size:28px; LINE-HEIGHT:28px; color:#737373">
+        <li>The user's text is cleaned using the same algorithm as on our training corpus.</li>
+        <li>The preceding <b>4</b> words are checked against our lookup table. If an exact match is found then the resulting row is used.</li>
+        <li> If an exact match is not found then the preceding <b>3</b> words are checked against our lookup table. If an exact match is found then the resulting row is used. </li>
+        <li> If an exact match is not found then the preceding <b>2</b> words are checked against our lookup table. If an exact match is found then the resulting row is used. </li>
+        <li> If an exact match is not found then the preceding <b>1</b> word are checked against our lookup table. If an exact match is found then the resulting row is used. </li>
+        <li>If an exact match is still not found, then we simply have to go with the results of the most common 5 tokens.</li>
+</ol>
+
+
+Application Performance
+========================================================
+
+Earlier we separated our large corpus into 70% training data and 30% testing data. We evaluate our application against our training and testing sets separately by randomly selecting tens of thousands of lines from either set and trying to predict a random word in the line based on the preceding words. 
+
+```{r echo=FALSE}
+combined_performance_t <- as.data.table(read.csv(file = './data/combined_performance_t.csv', stringsAsFactors=FALSE))
+
+combined_performance_t %>% kable() %>%
+                kable_styling(full_width = F) %>%
+                row_spec(0, background = "#e6e6e6") %>%
+                column_spec(1, background = "#C3C3B9", bold = T, border_right = T) %>%
+                column_spec(2, background = "SkyBlue", border_right = T) %>%
+                column_spec(3, background = "#1AD167", border_right = T)
+```
+
+Our performance in our training and testing sets are very similar. This is likely due to the extremely large size of our data used. Our accuracies are fairly good, but our most important feature is our almost instantaneous prediction time. This could even be shortened further if needed by reducing our lengthy text cleaning process.
+
+<span style="font-size:26px"> Full Application:  [https://charlesbryan.shinyapps.io/Text_PredictR](https://charlesbryan.shinyapps.io/Text_PredictR)</span>
+
+<span style="font-size:26px"> Full Details:  [https://rpubs.com/CharlesBryan/Text_Prediction](https://rpubs.com/CharlesBryan/Text_Prediction)</span>
+***
+<span style="font-size:28px; LINE-HEIGHT:24px">Below is our application in use. The user has entered <i><span style="color:red">Getting an A in this course would make me the</span></i> into the app. The top five results are shown in order directly above the text field. A more descriptive display of the results is shown in a table to the right.</span>
+![alt text](Application_use.png)

@@ -1,0 +1,12 @@
+name: Text_PredictR
+title: Text_PredictR
+username:
+account: charlesbryan
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 2448159
+bundleId: 3279987
+url: https://charlesbryan.shinyapps.io/Text_PredictR/
+when: 1592356576.57321
+asMultiple: FALSE
+asStatic: FALSE
